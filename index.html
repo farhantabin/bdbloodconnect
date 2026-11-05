@@ -1,0 +1,2500 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>BloodConnect — Blood Donation Network</title>
+<meta name="theme-color" content="#D90A24" />
+<meta name="description" content="BloodConnect — connect blood donors with patients in seconds. No account needed." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          brand: {
+            50:'#FFF1F2',100:'#FFE1E4',200:'#FFC7CD',300:'#FF9BA6',400:'#FF5D70',
+            500:'#F5162F',600:'#D90A24',700:'#B00720',800:'#920B21',900:'#7C0F22'
+          }
+        },
+        fontFamily: {
+          sans: ['"Plus Jakarta Sans"','"Hind Siliguri"','system-ui','sans-serif']
+        },
+        boxShadow: {
+          soft: '0 4px 24px -6px rgba(15,23,42,0.10)',
+          card: '0 10px 40px -14px rgba(15,23,42,0.18)',
+          red:  '0 14px 34px -12px rgba(217,10,36,0.55)'
+        }
+      }
+    }
+  }
+</script>
+<style>
+  html { -webkit-text-size-adjust: 100%; }
+  body { font-family:'Plus Jakarta Sans','Hind Siliguri',system-ui,sans-serif; }
+  .no-scrollbar::-webkit-scrollbar { display:none; }
+  .no-scrollbar { -ms-overflow-style:none; scrollbar-width:none; }
+  @keyframes fadeUp { from { opacity:0; transform: translateY(14px); } to { opacity:1; transform:none; } }
+  .anim { animation: fadeUp .5s cubic-bezier(.22,1,.36,1) both; }
+  .anim-d1 { animation-delay:.06s } .anim-d2 { animation-delay:.12s } .anim-d3 { animation-delay:.18s }
+  @keyframes spin { to { transform: rotate(360deg) } }
+  .spinner { animation: spin .8s linear infinite; }
+  @keyframes pulseSoft { 0%,100%{opacity:.55} 50%{opacity:1} }
+  .pulse-soft { animation: pulseSoft 2s ease-in-out infinite; }
+  ::selection { background: #FFC7CD; }
+  .loading-screen { position:fixed; inset:0; display:grid; place-items:center; background:#fff; z-index:99; }
+</style>
+</head>
+<body class="bg-white text-slate-900 antialiased">
+
+<div id="root">
+  <div class="loading-screen">
+    <div class="text-center">
+      <div class="mx-auto h-14 w-14 rounded-full border-4 border-brand-100 border-t-brand-600 spinner"></div>
+      <p class="mt-4 text-sm font-semibold tracking-wide text-slate-400">BloodConnect</p>
+    </div>
+  </div>
+</div>
+
+<!-- Libraries -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+/* ══════════════════════════════════════════════════════════════
+   1. FIREBASE CONFIG  —  replace with your own project values.
+   If left as-is, the app automatically runs on a local
+   (localStorage) backend so it works out of the box.
+   ══════════════════════════════════════════════════════════════ */
+
+
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyARmdLk0EqZyXJkNEIXzq19D5fD1gbpNQo",
+  authDomain: "bd-bloodconnect.firebaseapp.com",
+  projectId: "bd-bloodconnect",
+  storageBucket: "bd-bloodconnect.firebasestorage.app",
+  messagingSenderId: "1039818577165",
+  appId: "1:1039818577165:web:1785a0df45350f3a3fcc44",
+  measurementId: "G-5KT0C2W2K5"
+};
+/* ══════════════════════════════════════════════════════════════
+   2. BACKEND LAYER (Firestore  ⟷  localStorage fallback)
+   ══════════════════════════════════════════════════════════════ */
+let backend = { type: 'local' };
+(function initBackend() {
+  const configured = FIREBASE_CONFIG.apiKey && !FIREBASE_CONFIG.apiKey.startsWith('YOUR_');
+  if (configured && window.firebase) {
+    try {
+      firebase.initializeApp(FIREBASE_CONFIG);
+      backend = { type: 'firebase', db: firebase.firestore() };
+      console.info('[BloodConnect] Firestore backend active.');
+      return;
+    } catch (e) { console.warn('[BloodConnect] Firebase init failed, using local storage.', e); }
+  }
+  console.info('[BloodConnect] Local storage backend active (no Firebase config).');
+})();
+
+const LS_KEYS = { requests: 'bc_requests_v1', donors: 'bc_donors_v1', seq: 'bc_seq_v1' };
+
+function lsRead(col) {
+  try { return JSON.parse(localStorage.getItem(LS_KEYS[col]) || '[]'); } catch (e) { return []; }
+}
+function lsWrite(col, arr) {
+  try { localStorage.setItem(LS_KEYS[col], JSON.stringify(arr)); } catch (e) {}
+}
+
+async function fetchAll(col) {
+  if (backend.type === 'firebase') {
+    try {
+      const snap = await backend.db.collection(col).orderBy('createdAt', 'desc').limit(400).get();
+      return snap.docs.map(d => d.data());
+    } catch (e) { console.warn(e); return []; }
+  }
+  return lsRead(col);
+}
+
+async function getDoc(col, id) {
+  if (backend.type === 'firebase') {
+    try {
+      const d = await backend.db.collection(col).doc(id).get();
+      return d.exists ? d.data() : null;
+    } catch (e) { console.warn(e); return null; }
+  }
+  return lsRead(col).find(x => x.id === id) || null;
+}
+
+async function putDoc(col, id, data, merge) {
+  if (backend.type === 'firebase') {
+    await backend.db.collection(col).doc(id).set(data, { merge: !!merge });
+    return;
+  }
+  const arr = lsRead(col);
+  const i = arr.findIndex(x => x.id === id);
+  if (i >= 0) arr[i] = merge ? { ...arr[i], ...data } : data;
+  else arr.unshift(data);
+  lsWrite(col, arr);
+}
+
+async function nextRequestSeq() {
+  if (backend.type === 'firebase') {
+    const ref = backend.db.collection('meta').doc('counters');
+    return backend.db.runTransaction(async (tx) => {
+      const doc = await tx.get(ref);
+      let n = doc.exists ? (doc.data().requestSeq || 0) : 0;
+      n += 1;
+      tx.set(ref, { requestSeq: n }, { merge: true });
+      return n;
+    });
+  }
+  const n = parseInt(localStorage.getItem(LS_KEYS.seq) || '0', 10) + 1;
+  try { localStorage.setItem(LS_KEYS.seq, String(n)); } catch (e) {}
+  return n;
+}
+
+async function nextRequestId() {
+  const year = new Date().getFullYear();
+  const n = await nextRequestSeq();
+  return `BC-${year}-${String(n).padStart(3, '0')}`;
+}
+
+function nextDonorId() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s = '';
+  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return 'BC-D-' + s;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   3. BANGLADESH GEO DATA
+   ══════════════════════════════════════════════════════════════ */
+const DIVISIONS = [
+  { en:'Dhaka', bn:'ঢাকা', districts:[
+    {en:'Dhaka',bn:'ঢাকা'},{en:'Gazipur',bn:'গাজীপুর'},{en:'Narayanganj',bn:'নারায়ণগঞ্জ'},
+    {en:'Narsingdi',bn:'নরসিংদী'},{en:'Manikganj',bn:'মানিকগঞ্জ'},{en:'Munshiganj',bn:'মুন্সিগঞ্জ'},
+    {en:'Tangail',bn:'টাঙ্গাইল'},{en:'Kishoreganj',bn:'কিশোরগঞ্জ'},{en:'Faridpur',bn:'ফরিদপুর'},
+    {en:'Gopalganj',bn:'গোপালগঞ্জ'},{en:'Madaripur',bn:'মাদারীপুর'},{en:'Rajbari',bn:'রাজবাড়ী'},
+    {en:'Shariatpur',bn:'শরীয়তপুর'}]},
+  { en:'Chattogram', bn:'চট্টগ্রাম', districts:[
+    {en:'Chattogram',bn:'চট্টগ্রাম'},{en:"Cox's Bazar",bn:'কক্সবাজার'},{en:'Cumilla',bn:'কুমিল্লা'},
+    {en:'Brahmanbaria',bn:'ব্রাহ্মণবাড়িয়া'},{en:'Chandpur',bn:'চাঁদপুর'},{en:'Feni',bn:'ফেনী'},
+    {en:'Noakhali',bn:'নোয়াখালী'},{en:'Lakshmipur',bn:'লক্ষ্মীপুর'},{en:'Khagrachhari',bn:'খাগড়াছড়ি'},
+    {en:'Rangamati',bn:'রাঙ্গামাটি'},{en:'Bandarban',bn:'বান্দরবান'}]},
+  { en:'Rajshahi', bn:'রাজশাহী', districts:[
+    {en:'Rajshahi',bn:'রাজশাহী'},{en:'Bogura',bn:'বগুড়া'},{en:'Joypurhat',bn:'জয়পুরহাট'},
+    {en:'Naogaon',bn:'নওগাঁ'},{en:'Natore',bn:'নাটোর'},{en:'Chapainawabganj',bn:'চাঁপাইনবাবগঞ্জ'},
+    {en:'Pabna',bn:'পাবনা'},{en:'Sirajganj',bn:'সিরাজগঞ্জ'}]},
+  { en:'Khulna', bn:'খুলনা', districts:[
+    {en:'Khulna',bn:'খুলনা'},{en:'Bagerhat',bn:'বাগেরহাট'},{en:'Satkhira',bn:'সাতক্ষীরা'},
+    {en:'Jashore',bn:'যশোর'},{en:'Jhenaidah',bn:'ঝিনাইদহ'},{en:'Magura',bn:'মাগুরা'},
+    {en:'Narail',bn:'নড়াইল'},{en:'Kushtia',bn:'কুষ্টিয়া'},{en:'Chuadanga',bn:'চুয়াডাঙ্গা'},
+    {en:'Meherpur',bn:'মেহেরপুর'}]},
+  { en:'Barishal', bn:'বরিশাল', districts:[
+    {en:'Barishal',bn:'বরিশাল'},{en:'Patuakhali',bn:'পটুয়াখালী'},{en:'Bhola',bn:'ভোলা'},
+    {en:'Pirojpur',bn:'পিরোজপুর'},{en:'Barguna',bn:'বরগুনা'},{en:'Jhalokathi',bn:'ঝালকাঠি'}]},
+  { en:'Sylhet', bn:'সিলেট', districts:[
+    {en:'Sylhet',bn:'সিলেট'},{en:'Moulvibazar',bn:'মৌলভীবাজার'},{en:'Habiganj',bn:'হবিগঞ্জ'},
+    {en:'Sunamganj',bn:'সুনামগঞ্জ'}]},
+  { en:'Rangpur', bn:'রংপুর', districts:[
+    {en:'Rangpur',bn:'রংপুর'},{en:'Dinajpur',bn:'দিনাজপুর'},{en:'Thakurgaon',bn:'ঠাকুরগাঁও'},
+    {en:'Panchagarh',bn:'পঞ্চগড়'},{en:'Nilphamari',bn:'নীলফামারী'},{en:'Lalmonirhat',bn:'লালমনিরহাট'},
+    {en:'Kurigram',bn:'কুড়িগ্রাম'},{en:'Gaibandha',bn:'গাইবান্ধা'}]},
+  { en:'Mymensingh', bn:'ময়মনসিংহ', districts:[
+    {en:'Mymensingh',bn:'ময়মনসিংহ'},{en:'Jamalpur',bn:'জামালপুর'},{en:'Netrokona',bn:'নেত্রকোণা'},
+    {en:'Sherpur',bn:'শেরপুর'}]}
+];
+
+const BLOOD_GROUPS = ['A+','A-','B+','B-','AB+','AB-','O+','O-'];
+
+function divName(en, lang) {
+  const d = DIVISIONS.find(x => x.en === en);
+  return d ? (lang === 'bn' ? d.bn : d.en) : en;
+}
+function distName(divEn, distEn, lang) {
+  const d = DIVISIONS.find(x => x.en === divEn);
+  if (!d) return distEn;
+  const t = d.districts.find(x => x.en === distEn);
+  return t ? (lang === 'bn' ? t.bn : t.en) : distEn;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   4. I18N
+   ══════════════════════════════════════════════════════════════ */
+const T = {
+  en: {
+    app: 'BloodConnect',
+    tag: 'Connecting donors. Saving lives.',
+    lang_btn: 'বাংলা',
+    home: 'Home', back: 'Back', search: 'Search', reset: 'Reset', all: 'All',
+    loading: 'Loading…', noResults: 'No results found.', view_profile: 'View Profile',
+    required: 'Required', optional: 'optional', close: 'Close', menu: 'Menu',
+
+    nav_home: 'Home', nav_request: 'Request Blood', nav_donor: 'Become a Donor',
+    nav_donors: 'Find Donors', nav_requests: 'Find Requests',
+
+    hero_title: 'Every drop counts.',
+    hero_title2: 'Find blood. Fast.',
+    hero_sub: 'BloodConnect links patients with nearby donors in seconds — free, instant, and without any account.',
+    cta_request: 'Create Blood Request',
+    cta_donor: 'Register as Donor',
+    cta_findDonors: 'Search Donors',
+    cta_findRequests: 'Browse Requests',
+    stat_requests: 'Blood Requests',
+    stat_donors: 'Registered Donors',
+    stat_districts: 'Districts Covered',
+    no_account: 'No account or login required — ever.',
+
+    how_title: 'How it works',
+    how_sub: 'Three simple steps between a patient and a donor.',
+    how1_t: 'Create a request', how1_d: 'Fill a short form with the patient and hospital details.',
+    how2_t: 'Share the link', how2_d: 'Send the public profile link on WhatsApp or Facebook.',
+    how3_t: 'Get matched', how3_d: 'Nearby donors see it and contact you directly.',
+
+    recent_title: 'Recent blood requests',
+    recent_sub: 'Open requests that still need help.',
+    view_all: 'View all',
+
+    /* Request form */
+    rf_title: 'Create a blood request',
+    rf_sub: 'Fill in the details below. A public profile link is generated instantly.',
+    patient_name: 'Patient Name',
+    patient_age: 'Patient Age',
+    blood_group: 'Blood Group',
+    bags: 'Number of Blood Bags',
+    bag_unit: 'bags',
+    hospital_name: 'Hospital Name',
+    hospital_address: 'Hospital Address',
+    required_date: 'Required Date',
+    required_time: 'Required Time',
+    urgency: 'Urgency',
+    urgency_normal: 'Normal',
+    urgency_urgent: 'Urgent',
+    urgency_critical: 'Critical',
+    division: 'Division',
+    district: 'District',
+    upazila: 'Upazila',
+    area: 'Area',
+    detailed_address: 'Detailed Address',
+    contact_person: 'Contact Person Name',
+    phone: 'Phone Number',
+    alt_phone: 'Alternative Phone Number',
+    whatsapp: 'WhatsApp Number',
+    notes: 'Additional Notes',
+    notes_ph: 'Any extra information for the donor…',
+    select_division: 'Select division',
+    select_district: 'Select district',
+    upazila_ph: 'e.g. Savar',
+    area_ph: 'e.g. Ashulia Bazar',
+    submit_request: 'Submit Blood Request',
+
+    /* Donor form */
+    df_title: 'Become a blood donor',
+    df_sub: 'Join the network. Your public donor profile is created instantly.',
+    full_name: 'Full Name',
+    availability: 'Availability',
+    available: 'Available',
+    unavailable: 'Not available',
+    last_donation: 'Last Donation Date',
+    bio: 'Short Bio',
+    bio_ph: 'Tell patients a little about yourself…',
+    submit_donor: 'Create Donor Profile',
+
+    /* Confirmation */
+    confirm_text: 'I confirm that all the information I have provided is correct.',
+    confirm_required: 'Please confirm that the information is correct.',
+
+    /* Profiles */
+    request_profile: 'Blood Request',
+    donor_profile: 'Donor Profile',
+    request_id: 'Request ID',
+    donor_id: 'Donor ID',
+    status: 'Status',
+    status_active: 'Active',
+    status_fulfilled: 'Fulfilled',
+    status_expired: 'Expired',
+    mark_fulfilled: 'Mark as Fulfilled',
+    fulfilled_msg: 'Marked as fulfilled. Thank you!',
+    patient_details: 'Patient Details',
+    hospital_details: 'Hospital Details',
+    location_details: 'Location',
+    contact_details: 'Contact',
+    share_this: 'Share this profile',
+    download_card: 'Download Request Card',
+    download_card_donor: 'Download Donor Card',
+    generating: 'Generating…',
+    public_link: 'Public profile link',
+    scan_qr: 'Scan for full details',
+    call_now: 'Call Now',
+    chat_whatsapp: 'WhatsApp',
+    copy_link: 'Copy Link',
+    copied: 'Link copied!',
+    native_share: 'Share',
+    not_found: 'Profile not found',
+    not_found_d: 'This link may be invalid or the profile was removed.',
+    go_home: 'Go to Home',
+    last_donated: 'Last donated',
+    never_donated: 'First-time donor',
+
+    /* Search */
+    ds_title: 'Find a blood donor',
+    ds_sub: 'Filter by blood group and location to find a matching donor.',
+    rs_title: 'Find a blood request',
+    rs_sub: 'Browse open requests and filter by what you need.',
+    filter_availability: 'Availability',
+    any: 'Any',
+    found: 'found',
+    no_donors: 'No donors match these filters yet.',
+    no_requests: 'No blood requests match these filters yet.',
+
+    /* Messages */
+    msg_request_created: 'Blood request created successfully!',
+    msg_donor_created: 'Donor profile created successfully!',
+    err_required: 'This field is required',
+    err_phone: 'Enter a valid phone number',
+    err_confirm: 'You must confirm the information is correct',
+    err_generic: 'Something went wrong. Please try again.',
+
+    footer_tag: 'BloodConnect — a free, public blood donation network for Bangladesh.',
+    footer_note: 'No account. No login. Just help.',
+    generated_by: 'Generated by BloodConnect • bloodconnect.app',
+    share_message: 'Blood needed! Open this link to see the details and help:',
+    share_message_donor: 'Blood donor available. Open this link to see the details:'
+  },
+
+  bn: {
+    app: 'ব্লাডকানেক্ট',
+    tag: 'রক্তদাতা ও রোগীর মিলনস্থল',
+    lang_btn: 'English',
+    home: 'হোম', back: 'ফিরে যান', search: 'খুঁজুন', reset: 'রিসেট', all: 'সব',
+    loading: 'লোড হচ্ছে…', noResults: 'কিছু পাওয়া যায়নি।', view_profile: 'প্রোফাইল দেখুন',
+    required: 'আবশ্যক', optional: 'ঐচ্ছিক', close: 'বন্ধ', menu: 'মেনু',
+
+    nav_home: 'হোম', nav_request: 'রক্তের আবেদন', nav_donor: 'রক্তদাতা হোন',
+    nav_donors: 'রক্তদাতা খুঁজুন', nav_requests: 'আবেদন দেখুন',
+
+    hero_title: 'প্রতিটি ফোঁটা রক্ত',
+    hero_title2: 'একটি জীবন বাঁচায়।',
+    hero_sub: 'কোনো অ্যাকাউন্ট ছাড়াই কয়েক সেকেন্ডে রক্তের আবেদন করুন অথবা কাছের রক্তদাতা খুঁজে নিন — সম্পূর্ণ ফ্রি।',
+    cta_request: 'রক্তের আবেদন করুন',
+    cta_donor: 'রক্তদাতা হিসেবে যোগ দিন',
+    cta_findDonors: 'রক্তদাতা খুঁজুন',
+    cta_findRequests: 'আবেদন দেখুন',
+    stat_requests: 'রক্তের আবেদন',
+    stat_donors: 'নিবন্ধিত রক্তদাতা',
+    stat_districts: 'জেলা',
+    no_account: 'কোনো অ্যাকাউন্ট বা লগইন লাগবে না — কখনোই না।',
+
+    how_title: 'কীভাবে কাজ করে',
+    how_sub: 'রোগী আর রক্তদাতার মাঝে মাত্র তিনটি ধাপ।',
+    how1_t: 'আবেদন করুন', how1_d: 'রোগী ও হাসপাতালের তথ্য দিয়ে ছোট্ট একটি ফর্ম পূরণ করুন।',
+    how2_t: 'লিংক শেয়ার করুন', how2_d: 'পাবলিক প্রোফাইল লিংকটি WhatsApp বা Facebook-এ পাঠান।',
+    how3_t: 'সংযোগ করুন', how3_d: 'কাছের রক্তদাতারা দেখে সরাসরি আপনাকে কল করবেন।',
+
+    recent_title: 'সাম্প্রতিক রক্তের আবেদন',
+    recent_sub: 'যেসব আবেদনে এখনো রক্তদাতা প্রয়োজন।',
+    view_all: 'সব দেখুন',
+
+    rf_title: 'রক্তের আবেদন তৈরি করুন',
+    rf_sub: 'নিচের তথ্যগুলো পূরণ করুন। সাথে সাথেই একটি পাবলিক প্রোফাইল লিংক তৈরি হবে।',
+    patient_name: 'রোগীর নাম',
+    patient_age: 'রোগীর বয়স',
+    blood_group: 'রক্তের গ্রুপ',
+    bags: 'রক্তের ব্যাগ সংখ্যা',
+    bag_unit: 'ব্যাগ',
+    hospital_name: 'হাসপাতালের নাম',
+    hospital_address: 'হাসপাতালের ঠিকানা',
+    required_date: 'প্রয়োজনের তারিখ',
+    required_time: 'প্রয়োজনের সময়',
+    urgency: 'জরুরি অবস্থা',
+    urgency_normal: 'সাধারণ',
+    urgency_urgent: 'জরুরি',
+    urgency_critical: 'অতি জরুরি',
+    division: 'বিভাগ',
+    district: 'জেলা',
+    upazila: 'উপজেলা',
+    area: 'এলাকা',
+    detailed_address: 'বিস্তারিত ঠিকানা',
+    contact_person: 'যোগাযোগ ব্যক্তির নাম',
+    phone: 'ফোন নম্বর',
+    alt_phone: 'বিকল্প ফোন নম্বর',
+    whatsapp: 'হোয়াটসঅ্যাপ নম্বর',
+    notes: 'অতিরিক্ত তথ্য',
+    notes_ph: 'রক্তদাতার জন্য অতিরিক্ত কোনো তথ্য…',
+    select_division: 'বিভাগ নির্বাচন করুন',
+    select_district: 'জেলা নির্বাচন করুন',
+    upazila_ph: 'যেমন: সাভার',
+    area_ph: 'যেমন: আশুলিয়া বাজার',
+    submit_request: 'আবেদন জমা দিন',
+
+    df_title: 'রক্তদাতা হিসেবে যোগ দিন',
+    df_sub: 'নেটওয়ার্কে যুক্ত হোন। সাথে সাথেই আপনার পাবলিক প্রোফাইল তৈরি হবে।',
+    full_name: 'পূর্ণ নাম',
+    availability: 'রক্তদানের প্রস্তুতি',
+    available: 'প্রস্তুত আছি',
+    unavailable: 'এখন প্রস্তুত নই',
+    last_donation: 'সর্বশেষ রক্তদানের তারিখ',
+    bio: 'সংক্ষিপ্ত পরিচিতি',
+    bio_ph: 'রোগীদের জন্য নিজের সম্পর্কে কিছু লিখুন…',
+    submit_donor: 'প্রোফাইল তৈরি করুন',
+
+    confirm_text: 'আমি নিশ্চিত করছি যে, আমার দেওয়া সকল তথ্য সঠিক।',
+    confirm_required: 'তথ্য সঠিক আছে বলে নিশ্চিত করুন।',
+
+    request_profile: 'রক্তের আবেদন',
+    donor_profile: 'রক্তদাতার প্রোফাইল',
+    request_id: 'আবেদন আইডি',
+    donor_id: 'রক্তদাতা আইডি',
+    status: 'অবস্থা',
+    status_active: 'চলমান',
+    status_fulfilled: 'সম্পন্ন',
+    status_expired: 'সময় শেষ',
+    mark_fulfilled: 'সম্পন্ন হিসেবে চিহ্নিত করুন',
+    fulfilled_msg: 'সম্পন্ন হিসেবে চিহ্নিত হয়েছে। ধন্যবাদ!',
+    patient_details: 'রোগীর তথ্য',
+    hospital_details: 'হাসপাতালের তথ্য',
+    location_details: 'অবস্থান',
+    contact_details: 'যোগাযোগ',
+    share_this: 'প্রোফাইলটি শেয়ার করুন',
+    download_card: 'রিকোয়েস্ট কার্ড ডাউনলোড',
+    download_card_donor: 'ডোনার কার্ড ডাউনলোড',
+    generating: 'তৈরি হচ্ছে…',
+    public_link: 'পাবলিক প্রোফাইল লিংক',
+    scan_qr: 'বিস্তারিত দেখতে স্ক্যান করুন',
+    call_now: 'কল করুন',
+    chat_whatsapp: 'হোয়াটসঅ্যাপ',
+    copy_link: 'লিংক কপি করুন',
+    copied: 'লিংক কপি হয়েছে!',
+    native_share: 'শেয়ার',
+    not_found: 'প্রোফাইল পাওয়া যায়নি',
+    not_found_d: 'লিংকটি সঠিক নয় অথবা প্রোফাইলটি মুছে ফেলা হয়েছে।',
+    go_home: 'হোমে যান',
+    last_donated: 'সর্বশেষ রক্তদান',
+    never_donated: 'প্রথমবার রক্তদাতা',
+
+    ds_title: 'রক্তদাতা খুঁজুন',
+    ds_sub: 'রক্তের গ্রুপ ও এলাকা অনুযায়ী ফিল্টার করে রক্তদাতা খুঁজে নিন।',
+    rs_title: 'রক্তের আবেদন খুঁজুন',
+    rs_sub: 'চলমান আবেদনগুলো দেখুন এবং প্রয়োজন অনুযায়ী ফিল্টার করুন।',
+    filter_availability: 'প্রস্তুতি',
+    any: 'যেকোনো',
+    found: 'টি পাওয়া গেছে',
+    no_donors: 'এই ফিল্টারে কোনো রক্তদাতা পাওয়া যায়নি।',
+    no_requests: 'এই ফিল্টারে কোনো আবেদন পাওয়া যায়নি।',
+
+    msg_request_created: 'রক্তের আবেদন সফলভাবে তৈরি হয়েছে!',
+    msg_donor_created: 'রক্তদাতার প্রোফাইল সফলভাবে তৈরি হয়েছে!',
+    err_required: 'এই ঘরটি পূরণ করা আবশ্যক',
+    err_phone: 'সঠিক ফোন নম্বর দিন',
+    err_confirm: 'তথ্য সঠিক আছে বলে নিশ্চিত করুন',
+    err_generic: 'কিছু একটা সমস্যা হয়েছে। আবার চেষ্টা করুন।',
+
+    footer_tag: 'ব্লাডকানেক্ট — বাংলাদেশের জন্য একটি ফ্রি, উন্মুক্ত রক্তদান নেটওয়ার্ক।',
+    footer_note: 'কোনো অ্যাকাউন্ট নয়। কোনো লগইন নয়। শুধুই সাহায্য।',
+    generated_by: 'ব্লাডকানেক্ট দ্বারা তৈরি • bloodconnect.app',
+    share_message: 'রক্ত প্রয়োজন! বিস্তারিত দেখতে ও সাহায্য করতে এই লিংকে যান:',
+    share_message_donor: 'রক্তদাতা প্রস্তুত আছেন। বিস্তারিত দেখতে এই লিংকে যান:'
+  }
+};
+
+/* ══════════════════════════════════════════════════════════════
+   5. HELPERS
+   ══════════════════════════════════════════════════════════════ */
+const BN_DIGITS = {'0':'০','1':'১','2':'২','3':'৩','4':'৪','5':'৫','6':'৬','7':'৭','8':'৮','9':'৯'};
+const bnNum = (s) => String(s).replace(/[0-9]/g, d => BN_DIGITS[d]);
+const num = (v, lang) => (lang === 'bn' ? bnNum(v) : String(v));
+
+const EN_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const BN_MONTHS = ['জানুয়ারি','ফেব্রুয়ারি','মার্চ','এপ্রিল','মে','জুন','জুলাই','আগস্ট','সেপ্টেম্বর','অক্টোবর','নভেম্বর','ডিসেম্বর'];
+
+function fmtDate(d, lang) {
+  if (!d) return '—';
+  const dt = new Date(d + 'T00:00:00');
+  if (isNaN(dt.getTime())) return d;
+  if (lang === 'bn') return `${bnNum(dt.getDate())} ${BN_MONTHS[dt.getMonth()]} ${bnNum(dt.getFullYear())}`;
+  return `${dt.getDate()} ${EN_MONTHS[dt.getMonth()]} ${dt.getFullYear()}`;
+}
+
+function fmtTime(v, lang) {
+  if (!v) return '—';
+  const parts = String(v).split(':');
+  let h = parseInt(parts[0], 10);
+  const m = parts[1] || '00';
+  if (isNaN(h)) return v;
+  const ap = h >= 12 ? 'PM' : 'AM';
+  let hh = h % 12; if (hh === 0) hh = 12;
+  return `${num(hh, lang)}:${num(m, lang)} ${ap}`;
+}
+
+function reqStatus(r) {
+  if (r.fulfilled) return 'fulfilled';
+  if (r.requiredDate) {
+    const d = new Date(r.requiredDate + 'T23:59:59');
+    if (!isNaN(d.getTime()) && d.getTime() < Date.now()) return 'expired';
+  }
+  return 'active';
+}
+
+const BASE_PATH = (function () {
+  const p = window.location.pathname;
+  if (p.endsWith('.html')) return p.replace(/[^/]*$/, '');
+  return '/';
+})();
+
+function publicUrl(path) {
+  const base = BASE_PATH.replace(/\/$/, '');
+  return window.location.origin + base + path;
+}
+
+/* ── Router ─────────────────────────────────────────────────── */
+function getPath() {
+  let p = window.location.hash.startsWith('#/') ? window.location.hash.slice(1) : window.location.pathname;
+  if (p.endsWith('.html')) p = '/';
+  if (!p.startsWith('/')) p = '/' + p;
+  p = p.replace(/\/+$/, '');
+  return p || '/';
+}
+
+function navigate(to) {
+  try { window.history.pushState({}, '', to); }
+  catch (e) { window.location.hash = to; }
+  window.dispatchEvent(new Event('popstate'));
+  window.scrollTo(0, 0);
+}
+
+function isValidPhone(v) {
+  const digits = String(v || '').replace(/[^0-9]/g, '');
+  return digits.length >= 10 && digits.length <= 15;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   6. SHARED UI
+   ══════════════════════════════════════════════════════════════ */
+const inputCls =
+  'w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-[15px] text-slate-900 ' +
+  'placeholder-slate-400 outline-none transition focus:border-brand-400 focus:ring-4 focus:ring-brand-50';
+const selectCls = inputCls + ' appearance-none bg-[length:18px] bg-[right_14px_center] bg-no-repeat pr-11';
+const selectStyle = {
+  backgroundImage:
+    "url(\"data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8' stroke-width='2.2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E\")"
+};
+
+function Field({ label, required, error, children, hint }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-[13px] font-semibold text-slate-600">
+        {label}{required && <span className="text-brand-500"> *</span>}
+      </span>
+      {children}
+      {hint && !error && <span className="mt-1 block text-[11.5px] text-slate-400">{hint}</span>}
+      {error && <span className="mt-1 block text-[11.5px] font-semibold text-brand-600">{error}</span>}
+    </label>
+  );
+}
+
+function Card({ children, className = '' }) {
+  return (
+    <div className={`rounded-2xl border border-slate-100 bg-white p-4 shadow-soft sm:p-5 ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+function SectionTitle({ children, sub }) {
+  return (
+    <div className="mb-4">
+      <h2 className="text-lg font-extrabold tracking-tight text-slate-900 sm:text-xl">{children}</h2>
+      {sub && <p className="mt-1 text-[13px] leading-relaxed text-slate-500">{sub}</p>}
+    </div>
+  );
+}
+
+function Pill({ tone = 'slate', children }) {
+  const tones = {
+    slate: 'bg-slate-100 text-slate-600',
+    red: 'bg-brand-50 text-brand-700 border border-brand-100',
+    green: 'bg-emerald-50 text-emerald-700 border border-emerald-100',
+    amber: 'bg-amber-50 text-amber-700 border border-amber-100',
+    white: 'bg-white/15 text-white border border-white/25'
+  };
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold ${tones[tone]}`}>
+      {children}
+    </span>
+  );
+}
+
+function StatusPill({ status, t }) {
+  const map = {
+    active: { tone: 'green', label: t('status_active') },
+    fulfilled: { tone: 'slate', label: t('status_fulfilled') },
+    expired: { tone: 'amber', label: t('status_expired') }
+  };
+  const m = map[status] || map.active;
+  return <Pill tone={m.tone}>{m.label}</Pill>;
+}
+
+function UrgencyPill({ urgency, t }) {
+  const tone = urgency === 'critical' ? 'red' : urgency === 'urgent' ? 'amber' : 'slate';
+  return <Pill tone={tone}>{t('urgency_' + (urgency || 'normal'))}</Pill>;
+}
+
+function BloodBadge({ group, size = 'md' }) {
+  const sizes = {
+    sm: 'h-11 w-11 text-[15px]',
+    md: 'h-14 w-14 text-lg',
+    lg: 'h-20 w-20 text-2xl',
+    xl: 'h-28 w-28 text-4xl'
+  };
+  return (
+    <div className={`${sizes[size]} shrink-0 rounded-2xl bg-gradient-to-br from-brand-500 to-brand-800 text-white font-extrabold grid place-items-center shadow-red`}>
+      {group}
+    </div>
+  );
+}
+
+function ConfirmCheck({ checked, onChange, t, error }) {
+  return (
+    <div>
+      <label
+        className={`flex cursor-pointer items-start gap-3 rounded-2xl border p-4 transition ${
+          checked ? 'border-brand-300 bg-brand-50' : 'border-slate-200 bg-slate-50 hover:bg-slate-100'
+        }`}
+      >
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => onChange(e.target.checked)}
+          className="mt-0.5 h-5 w-5 shrink-0 cursor-pointer rounded accent-brand-600"
+        />
+        <span className="text-[13.5px] font-semibold leading-relaxed text-slate-700">{t('confirm_text')}</span>
+      </label>
+      {error && <span className="mt-1.5 block text-[11.5px] font-semibold text-brand-600">{error}</span>}
+    </div>
+  );
+}
+
+function Toast({ message }) {
+  if (!message) return null;
+  return (
+    <div className="fixed inset-x-0 bottom-6 z-50 flex justify-center px-4">
+      <div className="anim rounded-full bg-slate-900 px-5 py-3 text-[13px] font-semibold text-white shadow-card">
+        {message}
+      </div>
+    </div>
+  );
+}
+
+function Spinner({ className = '' }) {
+  return <span className={`inline-block h-4 w-4 rounded-full border-2 border-white/40 border-t-white spinner ${className}`} />;
+}
+
+/* ── Icons (inline SVG) ──────────────────────────────────────── */
+const Icon = {
+  drop: (p) => (
+    <svg viewBox="0 0 24 24" fill="currentColor" {...p}>
+      <path d="M12 2.2s6.6 6.2 6.6 11.1A6.6 6.6 0 0 1 12 20a6.6 6.6 0 0 1-6.6-6.7C5.4 8.4 12 2.2 12 2.2Z" />
+    </svg>
+  ),
+  home: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M3 10.5 12 3l9 7.5" /><path d="M5.5 9.5V20a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V9.5" />
+    </svg>
+  ),
+  search: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" {...p}>
+      <circle cx="11" cy="11" r="7" /><path d="m20 20-3.2-3.2" />
+    </svg>
+  ),
+  plus: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" {...p}>
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  ),
+  users: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" />
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  ),
+  pin: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 1 1 16 0Z" /><circle cx="12" cy="10" r="3" />
+    </svg>
+  ),
+  phone: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .3 1.9.6 2.8a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.2-1.2a2 2 0 0 1 2.1-.5c.9.3 1.8.5 2.8.6a2 2 0 0 1 1.7 2Z" />
+    </svg>
+  ),
+  calendar: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <rect x="3" y="4.5" width="18" height="17" rx="2.5" /><path d="M8 2.5v4M16 2.5v4M3 10h18" />
+    </svg>
+  ),
+  clock: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <circle cx="12" cy="12" r="9" /><path d="M12 7v5.2l3.3 2" />
+    </svg>
+  ),
+  hospital: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M4 21V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v15" /><path d="M2 21h20" />
+      <path d="M12 8v6M9 11h6" />
+    </svg>
+  ),
+  copy: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <rect x="9" y="9" width="12" height="12" rx="2.5" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  ),
+  download: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M12 3v12" /><path d="m7 11 5 5 5-5" /><path d="M4 20h16" />
+    </svg>
+  ),
+  share: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+      <path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4" />
+    </svg>
+  ),
+  check: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="m4.5 12.5 5 5 10-11" />
+    </svg>
+  ),
+  arrowLeft: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M19 12H5" /><path d="m12 19-7-7 7-7" />
+    </svg>
+  ),
+  arrowRight: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M5 12h14" /><path d="m12 5 7 7-7 7" />
+    </svg>
+  ),
+  menu: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" {...p}>
+      <path d="M4 7h16M4 12h16M4 17h16" />
+    </svg>
+  ),
+  x: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" {...p}>
+      <path d="M6 6l12 12M18 6 6 18" />
+    </svg>
+  ),
+  whatsapp: (p) => (
+    <svg viewBox="0 0 24 24" fill="currentColor" {...p}>
+      <path d="M12.04 2C6.6 2 2.2 6.4 2.2 11.84c0 1.94.55 3.75 1.5 5.29L2 22.5l5.5-1.66a9.8 9.8 0 0 0 4.54 1.12h.01c5.43 0 9.84-4.4 9.84-9.84C21.89 6.4 17.47 2 12.04 2Zm5.75 14.02c-.24.68-1.4 1.3-1.93 1.35-.53.05-1.02.24-3.43-.72-2.9-1.16-4.72-4.16-4.86-4.35-.14-.19-1.15-1.55-1.15-2.96 0-1.4.73-2.09 1-2.38.26-.29.58-.36.77-.36.19 0 .39 0 .55.01.18.01.42-.07.65.5.24.58.81 1.98.88 2.12.07.15.12.32.02.51-.1.19-.15.31-.29.48-.15.17-.31.38-.44.51-.14.14-.29.29-.12.58.17.29.74 1.22 1.6 1.98 1.1.98 2.03 1.29 2.32 1.43.29.15.46.12.63-.07.17-.19.72-.85.91-1.14.19-.29.39-.24.65-.14.26.09 1.65.78 1.94.92.29.15.48.22.55.34.07.12.07.7-.17 1.38Z" />
+    </svg>
+  ),
+  facebook: (p) => (
+    <svg viewBox="0 0 24 24" fill="currentColor" {...p}>
+      <path d="M22 12.06C22 6.5 17.52 2 12 2S2 6.5 2 12.06c0 5.02 3.66 9.19 8.44 9.94v-7.03H7.9v-2.9h2.54V9.85c0-2.52 1.49-3.91 3.77-3.91 1.1 0 2.24.2 2.24.2v2.46h-1.26c-1.24 0-1.63.78-1.63 1.57v1.89h2.78l-.45 2.9h-2.33V22c4.78-.75 8.44-4.92 8.44-9.94Z" />
+    </svg>
+  )
+};
+
+/* ══════════════════════════════════════════════════════════════
+   7. CANVAS CARD GENERATOR (1080 × 1350 PNG)
+   ══════════════════════════════════════════════════════════════ */
+function rr(ctx, x, y, w, h, r) {
+  const rad = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rad, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rad);
+  ctx.arcTo(x + w, y + h, x, y + h, rad);
+  ctx.arcTo(x, y + h, x, y, rad);
+  ctx.arcTo(x, y, x + w, y, rad);
+  ctx.closePath();
+}
+
+function wrapLines(ctx, text, maxWidth) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = '';
+  for (const w of words) {
+    const test = line ? line + ' ' + w : w;
+    if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = w; }
+    else line = test;
+  }
+  if (line) lines.push(line);
+  return lines.length ? lines : [''];
+}
+
+function makeQRCanvas(text, size) {
+  return new Promise((resolve, reject) => {
+    if (!window.QRCode) return reject(new Error('QR library unavailable'));
+    const holder = document.createElement('div');
+    holder.style.cssText = 'position:fixed;left:-99999px;top:0;width:1px;height:1px;overflow:hidden';
+    document.body.appendChild(holder);
+    try {
+      new window.QRCode(holder, {
+        text, width: size, height: size,
+        colorDark: '#0F172A', colorLight: '#FFFFFF',
+        correctLevel: window.QRCode.CorrectLevel.M
+      });
+    } catch (e) {
+      document.body.removeChild(holder);
+      return reject(e);
+    }
+    setTimeout(() => {
+      const canvas = holder.querySelector('canvas');
+      const img = holder.querySelector('img');
+      if (canvas) { document.body.removeChild(holder); resolve(canvas); }
+      else if (img) {
+        const c = document.createElement('canvas');
+        c.width = size; c.height = size;
+        const cx = c.getContext('2d');
+        cx.fillStyle = '#fff'; cx.fillRect(0, 0, size, size);
+        img.onload = () => { cx.drawImage(img, 0, 0, size, size); document.body.removeChild(holder); resolve(c); };
+        img.onerror = () => { document.body.removeChild(holder); reject(new Error('QR render failed')); };
+      } else {
+        document.body.removeChild(holder);
+        reject(new Error('QR render failed'));
+      }
+    }, 90);
+  });
+}
+
+async function generateRequestCard(req, lang, t) {
+  const isBn = lang === 'bn';
+  const W = 1080, H = 1350;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext('2d');
+
+  // Make sure webfonts are ready before drawing text
+  try {
+    await Promise.all([
+      document.fonts.load('700 46px "Hind Siliguri"'),
+      document.fonts.load('600 30px "Hind Siliguri"'),
+      document.fonts.load('400 24px "Hind Siliguri"'),
+      document.fonts.load('800 46px "Plus Jakarta Sans"'),
+      document.fonts.load('700 30px "Plus Jakarta Sans"'),
+      document.fonts.load('500 24px "Plus Jakarta Sans"')
+    ]);
+    await document.fonts.ready;
+  } catch (e) { /* ignore */ }
+
+  const FONT = '"Plus Jakarta Sans","Hind Siliguri",system-ui,sans-serif';
+  const setF = (weight, size) => { ctx.font = `${weight} ${size}px ${FONT}`; };
+  const N = (v) => (isBn ? bnNum(v) : String(v));
+  const safe = (v) => (v && String(v).trim() ? String(v).trim() : '—');
+
+  /* background */
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#FFF1F2');
+  bg.addColorStop(0.5, '#FFFFFF');
+  bg.addColorStop(1, '#FFF5F5');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  /* decorative blobs */
+  ctx.fillStyle = 'rgba(245,22,47,0.055)';
+  ctx.beginPath(); ctx.arc(1010, 90, 280, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(40, 1300, 240, 0, Math.PI * 2); ctx.fill();
+
+  /* header band */
+  const hg = ctx.createLinearGradient(0, 0, W, 300);
+  hg.addColorStop(0, '#F5162F');
+  hg.addColorStop(1, '#A10F22');
+  ctx.fillStyle = hg;
+  ctx.fillRect(0, 0, W, 300);
+
+  /* logo droplet */
+  ctx.fillStyle = 'rgba(255,255,255,0.16)';
+  ctx.beginPath(); ctx.arc(98, 104, 44, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#FFFFFF';
+  (function droplet(cx, cy, r) {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - r);
+    ctx.bezierCurveTo(cx + r * 0.95, cy - r * 0.12, cx + r * 0.98, cy + r * 0.55, cx, cy + r);
+    ctx.bezierCurveTo(cx - r * 0.98, cy + r * 0.55, cx - r * 0.95, cy - r * 0.12, cx, cy - r);
+    ctx.closePath();
+    ctx.fill();
+  })(98, 104, 21);
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = '#FFFFFF';
+  setF(800, 40);
+  ctx.fillText(t('app'), 160, 100);
+  ctx.fillStyle = 'rgba(255,255,255,0.78)';
+  setF(500, 20);
+  ctx.fillText(t('tag'), 160, 134);
+
+  /* request id chip */
+  setF(700, 26);
+  const idText = safe(req.id);
+  const idW = ctx.measureText(idText).width;
+  const chipW = idW + 56, chipH = 60, chipX = W - 60 - chipW, chipY = 74;
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  rr(ctx, chipX, chipY, chipW, chipH, 30);
+  ctx.fill();
+  ctx.fillStyle = '#FFFFFF';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(idText, chipX + 28, chipY + chipH / 2 + 1);
+
+  /* header title */
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = '#FFFFFF';
+  setF(800, 52);
+  ctx.fillText(t('request_profile'), 70, 240);
+
+  /* urgency pill (right) */
+  const urgLabel = t('urgency_' + (req.urgency || 'normal'));
+  setF(700, 24);
+  const uw = ctx.measureText(urgLabel).width;
+  const pillW = uw + 52, pillH = 52, pillX = W - 70 - pillW, pillY = 202;
+  ctx.fillStyle = 'rgba(255,255,255,0.94)';
+  rr(ctx, pillX, pillY, pillW, pillH, 26);
+  ctx.fill();
+  ctx.fillStyle = '#A10F22';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(urgLabel, pillX + pillW / 2, pillY + pillH / 2 + 1);
+
+  /* main card */
+  ctx.save();
+  ctx.shadowColor = 'rgba(15,23,42,0.14)';
+  ctx.shadowBlur = 44;
+  ctx.shadowOffsetY = 18;
+  ctx.fillStyle = '#FFFFFF';
+  rr(ctx, 56, 262, W - 112, 952, 46);
+  ctx.fill();
+  ctx.restore();
+
+  /* blood group badge */
+  ctx.save();
+  ctx.shadowColor = 'rgba(217,10,36,0.38)';
+  ctx.shadowBlur = 34;
+  ctx.shadowOffsetY = 12;
+  const bgr = ctx.createLinearGradient(760, 296, 972, 508);
+  bgr.addColorStop(0, '#F5162F');
+  bgr.addColorStop(1, '#920B21');
+  ctx.fillStyle = bgr;
+  ctx.beginPath(); ctx.arc(866, 402, 104, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+  ctx.lineWidth = 8;
+  ctx.beginPath(); ctx.arc(866, 402, 96, 0, Math.PI * 2); ctx.stroke();
+
+  ctx.fillStyle = '#FFFFFF';
+  setF(800, 74);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(safe(req.bloodGroup), 866, 406);
+
+  /* patient */
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = '#94A3B8';
+  setF(700, 21);
+  ctx.fillText(t('patient_name').toUpperCase(), 110, 342);
+
+  ctx.fillStyle = '#0F172A';
+  setF(800, 44);
+  const nameLines = wrapLines(ctx, safe(req.patientName), 620).slice(0, 2);
+  if (wrapLines(ctx, safe(req.patientName), 620).length > 2) {
+    nameLines[1] = nameLines[1].replace(/.{0,3}$/, '…');
+  }
+  nameLines.forEach((l, i) => ctx.fillText(l, 110, 392 + i * 52));
+
+  /* hospital */
+  ctx.fillStyle = '#94A3B8';
+  setF(700, 21);
+  ctx.fillText(t('hospital_name').toUpperCase(), 110, 486);
+
+  ctx.fillStyle = '#334155';
+  setF(600, 30);
+  const hospLines = wrapLines(ctx, safe(req.hospitalName), 620).slice(0, 2);
+  hospLines.forEach((l, i) => ctx.fillText(l, 110, 526 + i * 38));
+
+  /* divider */
+  ctx.strokeStyle = '#F1F5F9';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(110, 606); ctx.lineTo(970, 606); ctx.stroke();
+
+  /* three column strip */
+  const cols = [
+    { x: 110, label: t('bags'), value: `${N(safe(req.bags))} ${t('bag_unit')}` },
+    { x: 428, label: t('required_date'), value: fmtDate(req.requiredDate, lang) },
+    { x: 748, label: t('required_time'), value: fmtTime(req.requiredTime, lang) }
+  ];
+  cols.forEach((c) => {
+    ctx.fillStyle = '#94A3B8';
+    setF(700, 21);
+    ctx.textAlign = 'left';
+    ctx.fillText(c.label.toUpperCase(), c.x, 664);
+    ctx.fillStyle = '#0F172A';
+    setF(700, 30);
+    ctx.fillText(c.value, c.x, 706);
+  });
+
+  ctx.strokeStyle = '#F1F5F9';
+  ctx.beginPath(); ctx.moveTo(110, 750); ctx.lineTo(970, 750); ctx.stroke();
+
+  /* location */
+  ctx.fillStyle = '#94A3B8';
+  setF(700, 21);
+  ctx.fillText(t('location_details').toUpperCase(), 110, 802);
+
+  const locParts = [req.division, req.district, req.upazila, req.area].filter(Boolean);
+  const loc = locParts.length ? locParts.join(', ') : safe(req.detailedAddress);
+  ctx.fillStyle = '#0F172A';
+  setF(600, 29);
+  const locLines = wrapLines(ctx, loc, 860).slice(0, 2);
+  locLines.forEach((l, i) => ctx.fillText(l, 110, 844 + i * 38));
+
+  /* contact */
+  ctx.fillStyle = '#94A3B8';
+  setF(700, 21);
+  ctx.fillText(t('contact_details').toUpperCase(), 110, 942);
+
+  const phoneText = N(safe(req.phone));
+  ctx.fillStyle = '#0F172A';
+  setF(800, 36);
+  ctx.fillText(phoneText, 110, 988);
+  const pw = ctx.measureText(phoneText).width;
+
+  if (req.contactName) {
+    ctx.fillStyle = '#64748B';
+    setF(500, 24);
+    ctx.fillText('•  ' + safe(req.contactName), 110 + pw + 16, 988);
+  }
+
+  /* bottom divider */
+  ctx.strokeStyle = '#F1F5F9';
+  ctx.beginPath(); ctx.moveTo(110, 1018); ctx.lineTo(970, 1018); ctx.stroke();
+
+  /* QR code */
+  let qrCanvas = null;
+  try {
+    qrCanvas = await makeQRCanvas(publicUrl('/request/' + req.id), 340);
+  } catch (e) { /* QR is optional */ }
+
+  const qx = 828, qy = 1040, qs = 160;
+  ctx.fillStyle = '#FFFFFF';
+  rr(ctx, qx - 10, qy - 10, qs + 20, qs + 20, 18);
+  ctx.fill();
+  ctx.strokeStyle = '#F1F5F9';
+  ctx.lineWidth = 2;
+  rr(ctx, qx - 10, qy - 10, qs + 20, qs + 20, 18);
+  ctx.stroke();
+
+  if (qrCanvas) {
+    ctx.drawImage(qrCanvas, qx, qy, qs, qs);
+  } else {
+    ctx.fillStyle = '#F1F5F9';
+    rr(ctx, qx, qy, qs, qs, 10);
+    ctx.fill();
+    ctx.fillStyle = '#94A3B8';
+    setF(700, 22);
+    ctx.textAlign = 'center';
+    ctx.fillText('QR', qx + qs / 2, qy + qs / 2 + 8);
+    ctx.textAlign = 'left';
+  }
+
+  /* brand block bottom-left */
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#D90A24';
+  setF(800, 32);
+  ctx.fillText(t('app'), 110, 1090);
+
+  ctx.fillStyle = '#64748B';
+  setF(500, 22);
+  ctx.fillText(t('tag'), 110, 1126);
+
+  ctx.fillStyle = '#94A3B8';
+  setF(500, 20);
+  ctx.fillText(t('scan_qr'), 110, 1160);
+
+  /* footer */
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#94A3B8';
+  setF(500, 21);
+  ctx.fillText(t('generated_by'), W / 2, 1276);
+
+  return cv;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   8. HEADER / FOOTER
+   ══════════════════════════════════════════════════════════════ */
+function Header({ lang, setLang, t }) {
+  const [open, setOpen] = useState(false);
+  const nav = [
+    { label: t('nav_home'), path: '/' },
+    { label: t('nav_request'), path: '/request-blood' },
+    { label: t('nav_donor'), path: '/register-donor' },
+    { label: t('nav_donors'), path: '/donors' },
+    { label: t('nav_requests'), path: '/requests' }
+  ];
+  const go = (p) => { setOpen(false); navigate(p); };
+
+  return (
+    <header className="sticky top-0 z-40 border-b border-slate-100 bg-white/85 backdrop-blur-xl">
+      <div className="mx-auto flex h-16 max-w-5xl items-center justify-between gap-3 px-4">
+        <button onClick={() => go('/')} className="flex items-center gap-2.5">
+          <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-800 text-white shadow-red">
+            <Icon.drop className="h-4.5 w-4.5" width="18" height="18" />
+          </span>
+          <span className="text-[17px] font-extrabold tracking-tight text-slate-900">{t('app')}</span>
+        </button>
+
+        <nav className="hidden items-center gap-1 md:flex">
+          {nav.map((n) => (
+            <button
+              key={n.path}
+              onClick={() => go(n.path)}
+              className="rounded-lg px-3 py-2 text-[13px] font-semibold text-slate-600 transition hover:bg-brand-50 hover:text-brand-700"
+            >
+              {n.label}
+            </button>
+          ))}
+        </nav>
+
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setLang(lang === 'en' ? 'bn' : 'en')}
+            className="rounded-full border border-brand-100 bg-brand-50 px-3.5 py-2 text-[12.5px] font-bold text-brand-700 transition hover:bg-brand-100 active:scale-95"
+          >
+            {t('lang_btn')}
+          </button>
+          <button
+            onClick={() => setOpen((v) => !v)}
+            className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 text-slate-600 md:hidden"
+            aria-label={t('menu')}
+          >
+            {open ? <Icon.x width="18" height="18" /> : <Icon.menu width="18" height="18" />}
+          </button>
+        </div>
+      </div>
+
+      {open && (
+        <div className="anim border-t border-slate-100 bg-white px-4 py-3 md:hidden">
+          <div className="grid gap-1">
+            {nav.map((n) => (
+              <button
+                key={n.path}
+                onClick={() => go(n.path)}
+                className="flex items-center justify-between rounded-xl px-3 py-3 text-left text-[14px] font-semibold text-slate-700 transition hover:bg-brand-50 hover:text-brand-700"
+              >
+                {n.label}
+                <Icon.arrowRight width="16" height="16" className="text-slate-300" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </header>
+  );
+}
+
+function Footer({ t }) {
+  return (
+    <footer className="mt-14 border-t border-slate-100 bg-gradient-to-b from-white to-brand-50/40">
+      <div className="mx-auto max-w-5xl px-4 py-10">
+        <div className="flex items-center gap-2.5">
+          <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-800 text-white">
+            <Icon.drop width="18" height="18" />
+          </span>
+          <span className="text-[16px] font-extrabold tracking-tight text-slate-900">{t('app')}</span>
+        </div>
+        <p className="mt-3 max-w-md text-[13px] leading-relaxed text-slate-500">{t('footer_tag')}</p>
+        <p className="mt-4 text-[12px] font-semibold text-brand-600">{t('footer_note')}</p>
+      </div>
+    </footer>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   9. HOME PAGE
+   ══════════════════════════════════════════════════════════════ */
+function HomePage({ lang, t }) {
+  const [requests, setRequests] = useState([]);
+  const [donors, setDonors] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    Promise.all([fetchAll('requests'), fetchAll('donors')]).then(([r, d]) => {
+      if (!alive) return;
+      setRequests(r); setDonors(d); setLoaded(true);
+    });
+    return () => { alive = false; };
+  }, []);
+
+  const active = requests.filter((r) => reqStatus(r) === 'active');
+  const districts = new Set(donors.map((d) => d.district).filter(Boolean)).size;
+
+  const steps = [
+    { n: '1', title: t('how1_t'), desc: t('how1_d'), icon: <Icon.plus width="20" height="20" /> },
+    { n: '2', title: t('how2_t'), desc: t('how2_d'), icon: <Icon.share width="20" height="20" /> },
+    { n: '3', title: t('how3_t'), desc: t('how3_d'), icon: <Icon.users width="20" height="20" /> }
+  ];
+
+  return (
+    <div>
+      {/* HERO */}
+      <section className="relative overflow-hidden bg-gradient-to-br from-brand-600 via-brand-700 to-brand-900 px-4 pb-14 pt-12 text-white sm:pb-20 sm:pt-16">
+        <div className="pointer-events-none absolute -right-20 -top-24 h-72 w-72 rounded-full bg-white/10 blur-2xl" />
+        <div className="pointer-events-none absolute -bottom-24 -left-16 h-64 w-64 rounded-full bg-white/10 blur-2xl" />
+
+        <div className="relative mx-auto max-w-5xl">
+          <div className="anim inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/10 px-3 py-1.5 text-[11.5px] font-bold tracking-wide">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-300 pulse-soft" />
+            {t('no_account')}
+          </div>
+
+          <h1 className="anim anim-d1 mt-5 max-w-2xl text-[32px] font-extrabold leading-[1.15] tracking-tight sm:text-5xl">
+            {t('hero_title')}<br />
+            <span className="text-brand-100">{t('hero_title2')}</span>
+          </h1>
+
+          <p className="anim anim-d2 mt-4 max-w-xl text-[14px] leading-relaxed text-white/80 sm:text-base">
+            {t('hero_sub')}
+          </p>
+
+          <div className="anim anim-d3 mt-7 flex flex-col gap-3 sm:flex-row">
+            <button
+              onClick={() => navigate('/request-blood')}
+              className="group inline-flex items-center justify-center gap-2 rounded-2xl bg-white px-6 py-4 text-[14.5px] font-extrabold text-brand-700 shadow-card transition active:scale-[.98]"
+            >
+              <Icon.plus width="18" height="18" />
+              {t('cta_request')}
+              <Icon.arrowRight width="16" height="16" className="transition group-hover:translate-x-1" />
+            </button>
+            <button
+              onClick={() => navigate('/register-donor')}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/30 bg-white/10 px-6 py-4 text-[14.5px] font-extrabold text-white backdrop-blur transition hover:bg-white/20 active:scale-[.98]"
+            >
+              <Icon.drop width="18" height="18" />
+              {t('cta_donor')}
+            </button>
+          </div>
+
+          {/* Stats */}
+          <div className="mt-9 grid grid-cols-3 gap-2.5 sm:max-w-lg sm:gap-4">
+            {[
+              { v: requests.length, l: t('stat_requests') },
+              { v: donors.length, l: t('stat_donors') },
+              { v: districts || 0, l: t('stat_districts') }
+            ].map((s, i) => (
+              <div key={i} className="rounded-2xl border border-white/15 bg-white/10 px-3 py-3.5 text-center backdrop-blur">
+                <div className="text-xl font-extrabold sm:text-2xl">{loaded ? num(s.v, lang) : '—'}</div>
+                <div className="mt-0.5 text-[10.5px] font-semibold leading-tight text-white/75">{s.l}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* QUICK ACTIONS */}
+      <section className="mx-auto -mt-7 max-w-5xl px-4">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {[
+            { icon: <Icon.search width="18" height="18" />, label: t('cta_findDonors'), path: '/donors' },
+            { icon: <Icon.clock width="18" height="18" />, label: t('cta_findRequests'), path: '/requests' },
+            { icon: <Icon.plus width="18" height="18" />, label: t('nav_request'), path: '/request-blood' },
+            { icon: <Icon.users width="18" height="18" />, label: t('nav_donor'), path: '/register-donor' }
+          ].map((a, i) => (
+            <button
+              key={i}
+              onClick={() => navigate(a.path)}
+              className="anim flex flex-col items-start gap-2 rounded-2xl border border-slate-100 bg-white p-3.5 text-left shadow-soft transition hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-card active:scale-[.98]"
+            >
+              <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-50 text-brand-600">{a.icon}</span>
+              <span className="text-[12.5px] font-bold leading-tight text-slate-700">{a.label}</span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* HOW IT WORKS */}
+      <section className="mx-auto mt-12 max-w-5xl px-4">
+        <SectionTitle sub={t('how_sub')}>{t('how_title')}</SectionTitle>
+        <div className="grid gap-3 sm:grid-cols-3">
+          {steps.map((s, i) => (
+            <Card key={i} className="relative overflow-hidden">
+              <div className="absolute -right-3 -top-4 text-[64px] font-extrabold text-slate-50 select-none">{s.n}</div>
+              <div className="relative">
+                <span className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-800 text-white shadow-red">
+                  {s.icon}
+                </span>
+                <h3 className="mt-3 text-[14.5px] font-extrabold text-slate-900">{s.title}</h3>
+                <p className="mt-1 text-[12.5px] leading-relaxed text-slate-500">{s.desc}</p>
+              </div>
+            </Card>
+          ))}
+        </div>
+      </section>
+
+      {/* RECENT REQUESTS */}
+      <section className="mx-auto mt-12 max-w-5xl px-4">
+        <div className="flex items-end justify-between">
+          <SectionTitle sub={t('recent_sub')}>{t('recent_title')}</SectionTitle>
+          <button
+            onClick={() => navigate('/requests')}
+            className="mb-4 inline-flex items-center gap-1 text-[12.5px] font-bold text-brand-600 hover:text-brand-700"
+          >
+            {t('view_all')} <Icon.arrowRight width="14" height="14" />
+          </button>
+        </div>
+
+        {!loaded ? (
+          <Card><div className="py-6 text-center text-[13px] text-slate-400">{t('loading')}</div></Card>
+        ) : active.length === 0 ? (
+          <Card><div className="py-6 text-center text-[13px] text-slate-400">{t('no_requests')}</div></Card>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {active.slice(0, 4).map((r) => (
+              <RequestListCard key={r.id} req={r} lang={lang} t={t} />
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   10. LIST CARDS
+   ══════════════════════════════════════════════════════════════ */
+function RequestListCard({ req, lang, t }) {
+  return (
+    <button
+      onClick={() => navigate('/request/' + req.id)}
+      className="group w-full rounded-2xl border border-slate-100 bg-white p-4 text-left shadow-soft transition hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-card active:scale-[.99]"
+    >
+      <div className="flex items-start gap-3">
+        <BloodBadge group={req.bloodGroup} size="md" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="truncate text-[15px] font-extrabold text-slate-900">{req.patientName}</h3>
+          </div>
+          <p className="mt-0.5 truncate text-[12.5px] text-slate-500">{req.hospitalName}</p>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <UrgencyPill urgency={req.urgency} t={t} />
+            <Pill tone="slate">
+              <Icon.pin width="11" height="11" />
+              {distName(req.division, req.district, lang)}
+            </Pill>
+            <Pill tone="red">
+              {num(req.bags, lang)} {t('bag_unit')}
+            </Pill>
+          </div>
+          <div className="mt-2 flex items-center gap-3 text-[11.5px] font-semibold text-slate-400">
+            <span className="inline-flex items-center gap-1"><Icon.calendar width="12" height="12" />{fmtDate(req.requiredDate, lang)}</span>
+            <span className="inline-flex items-center gap-1"><Icon.clock width="12" height="12" />{fmtTime(req.requiredTime, lang)}</span>
+          </div>
+        </div>
+        <Icon.arrowRight width="16" height="16" className="mt-1 shrink-0 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-brand-500" />
+      </div>
+    </button>
+  );
+}
+
+function DonorListCard({ donor, lang, t }) {
+  return (
+    <button
+      onClick={() => navigate('/donor/' + donor.id)}
+      className="group w-full rounded-2xl border border-slate-100 bg-white p-4 text-left shadow-soft transition hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-card active:scale-[.99]"
+    >
+      <div className="flex items-start gap-3">
+        <BloodBadge group={donor.bloodGroup} size="md" />
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-[15px] font-extrabold text-slate-900">{donor.fullName}</h3>
+          <p className="mt-0.5 truncate text-[12.5px] text-slate-500">
+            {[donor.area, donor.upazila, donor.district].filter(Boolean).join(', ')}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <Pill tone={donor.availability === 'available' ? 'green' : 'slate'}>
+              {donor.availability === 'available' ? t('available') : t('unavailable')}
+            </Pill>
+            <Pill tone="slate">
+              {donor.lastDonationDate ? `${t('last_donated')}: ${fmtDate(donor.lastDonationDate, lang)}` : t('never_donated')}
+            </Pill>
+          </div>
+        </div>
+        <Icon.arrowRight width="16" height="16" className="mt-1 shrink-0 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-brand-500" />
+      </div>
+    </button>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   11. BLOOD REQUEST FORM
+   ══════════════════════════════════════════════════════════════ */
+const EMPTY_REQUEST = {
+  patientName: '', patientAge: '', bloodGroup: '', bags: '1',
+  hospitalName: '', hospitalAddress: '', requiredDate: '', requiredTime: '',
+  urgency: 'normal', division: '', district: '', upazila: '', area: '',
+  detailedAddress: '', contactName: '', phone: '', altPhone: '',
+  whatsapp: '', notes: ''
+};
+
+function RequestFormPage({ lang, t, showToast }) {
+  const [form, setForm] = useState(EMPTY_REQUEST);
+  const [confirmed, setConfirmed] = useState(false);
+  const [errors, setErrors] = useState({});
+  const [busy, setBusy] = useState(false);
+  const topRef = useRef(null);
+
+  const set = (k) => (e) => {
+    const v = e && e.target ? e.target.value : e;
+    setForm((f) => {
+      const next = { ...f, [k]: v };
+      if (k === 'division') { next.district = ''; }
+      return next;
+    });
+    setErrors((er) => ({ ...er, [k]: null }));
+  };
+
+  const districts = useMemo(() => {
+    const d = DIVISIONS.find((x) => x.en === form.division);
+    return d ? d.districts : [];
+  }, [form.division]);
+
+  function validate() {
+    const e = {};
+    ['patientName', 'patientAge', 'bloodGroup', 'bags', 'hospitalName', 'hospitalAddress',
+      'requiredDate', 'requiredTime', 'division', 'district', 'upazila', 'area',
+      'detailedAddress', 'contactName', 'phone'].forEach((k) => {
+        if (!String(form[k] || '').trim()) e[k] = t('err_required');
+      });
+    if (form.phone && !isValidPhone(form.phone)) e.phone = t('err_phone');
+    if (form.altPhone && !isValidPhone(form.altPhone)) e.altPhone = t('err_phone');
+    if (form.whatsapp && !isValidPhone(form.whatsapp)) e.whatsapp = t('err_phone');
+    if (!confirmed) e.confirm = t('err_confirm');
+    return e;
+  }
+
+  async function submit(ev) {
+    ev.preventDefault();
+    const e = validate();
+    if (Object.keys(e).length) {
+      setErrors(e);
+      if (topRef.current) topRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    setBusy(true);
+    try {
+      const id = await nextRequestId();
+      const record = {
+        ...form,
+        patientAge: Number(form.patientAge) || form.patientAge,
+        bags: Number(form.bags) || 1,
+        id,
+        fulfilled: false,
+        createdAt: new Date().toISOString()
+      };
+      await putDoc('requests', id, record);
+      showToast(t('msg_request_created'));
+      navigate('/request/' + id);
+    } catch (err) {
+      console.error(err);
+      showToast(t('err_generic'));
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div className="mx-auto max-w-3xl px-4 py-8" ref={topRef}>
+      <button onClick={() => navigate('/')} className="mb-5 inline-flex items-center gap-1.5 text-[13px] font-bold text-slate-500 hover:text-brand-600">
+        <Icon.arrowLeft width="15" height="15" /> {t('back')}
+      </button>
+
+      <div className="rounded-3xl bg-gradient-to-br from-brand-600 to-brand-900 p-6 text-white shadow-red">
+        <span className="inline-flex items-center gap-2 rounded-full bg-white/15 px-3 py-1 text-[11px] font-bold">
+          <Icon.drop width="12" height="12" /> {t('request_profile')}
+        </span>
+        <h1 className="mt-3 text-[24px] font-extrabold leading-tight sm:text-3xl">{t('rf_title')}</h1>
+        <p className="mt-2 text-[13px] leading-relaxed text-white/80">{t('rf_sub')}</p>
+      </div>
+
+      <form onSubmit={submit} className="mt-5 space-y-4">
+        {/* Patient */}
+        <Card>
+          <SectionTitle>{t('patient_details')}</SectionTitle>
+          <div className="grid gap-3.5 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <Field label={t('patient_name')} required error={errors.patientName}>
+                <input className={inputCls} value={form.patientName} onChange={set('patientName')} placeholder="Md. Rahim Uddin" />
+              </Field>
+            </div>
+            <Field label={t('patient_age')} required error={errors.patientAge}>
+              <input type="number" min="0" max="120" className={inputCls} value={form.patientAge} onChange={set('patientAge')} placeholder="34" />
+            </Field>
+            <Field label={t('blood_group')} required error={errors.bloodGroup}>
+              <select className={selectCls} style={selectStyle} value={form.bloodGroup} onChange={set('bloodGroup')}>
+                <option value="">{t('any')}</option>
+                {BLOOD_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
+              </select>
+            </Field>
+            <Field label={t('bags')} required error={errors.bags}>
+              <input type="number" min="1" max="50" className={inputCls} value={form.bags} onChange={set('bags')} />
+            </Field>
+            <Field label={t('urgency')} required error={errors.urgency}>
+              <select className={selectCls} style={selectStyle} value={form.urgency} onChange={set('urgency')}>
+                <option value="normal">{t('urgency_normal')}</option>
+                <option value="urgent">{t('urgency_urgent')}</option>
+                <option value="critical">{t('urgency_critical')}</option>
+              </select>
+            </Field>
+          </div>
+        </Card>
+
+        {/* Hospital */}
+        <Card>
+          <SectionTitle>{t('hospital_details')}</SectionTitle>
+          <div className="grid gap-3.5 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <Field label={t('hospital_name')} required error={errors.hospitalName}>
+                <input className={inputCls} value={form.hospitalName} onChange={set('hospitalName')} placeholder="Dhaka Medical College Hospital" />
+              </Field>
+            </div>
+            <div className="sm:col-span-2">
+              <Field label={t('hospital_address')} required error={errors.hospitalAddress}>
+                <input className={inputCls} value={form.hospitalAddress} onChange={set('hospitalAddress')} placeholder="Bakshi Bazar, Dhaka 1000" />
+              </Field>
+            </div>
+            <Field label={t('required_date')} required error={errors.requiredDate}>
+              <input type="date" className={inputCls} value={form.requiredDate} onChange={set('requiredDate')} />
+            </Field>
+            <Field label={t('required_time')} required error={errors.requiredTime}>
+              <input type="time" className={inputCls} value={form.requiredTime} onChange={set('requiredTime')} />
+            </Field>
+          </div>
+        </Card>
+
+        {/* Location */}
+        <Card>
+          <SectionTitle>{t('location_details')}</SectionTitle>
+          <div className="grid gap-3.5 sm:grid-cols-2">
+            <Field label={t('division')} required error={errors.division}>
+              <select className={selectCls} style={selectStyle} value={form.division} onChange={set('division')}>
+                <option value="">{t('select_division')}</option>
+                {DIVISIONS.map((d) => <option key={d.en} value={d.en}>{lang === 'bn' ? d.bn : d.en}</option>)}
+              </select>
+            </Field>
+            <Field label={t('district')} required error={errors.district}>
+              <select
+                className={selectCls}
+                style={selectStyle}
+                value={form.district}
+                onChange={set('district')}
+                disabled={!form.division}
+              >
+                <option value="">{t('select_district')}</option>
+                {districts.map((d) => <option key={d.en} value={d.en}>{lang === 'bn' ? d.bn : d.en}</option>)}
+              </select>
+            </Field>
+            <Field label={t('upazila')} required error={errors.upazila}>
+              <input className={inputCls} value={form.upazila} onChange={set('upazila')} placeholder={t('upazila_ph')} />
+            </Field>
+            <Field label={t('area')} required error={errors.area}>
+              <input className={inputCls} value={form.area} onChange={set('area')} placeholder={t('area_ph')} />
+            </Field>
+            <div className="sm:col-span-2">
+              <Field label={t('detailed_address')} required error={errors.detailedAddress}>
+                <input className={inputCls} value={form.detailedAddress} onChange={set('detailedAddress')} placeholder="Ward 12, Road 5, House 22" />
+              </Field>
+            </div>
+          </div>
+        </Card>
+
+        {/* Contact */}
+        <Card>
+          <SectionTitle>{t('contact_details')}</SectionTitle>
+          <div className="grid gap-3.5 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <Field label={t('contact_person')} required error={errors.contactName}>
+                <input className={inputCls} value={form.contactName} onChange={set('contactName')} placeholder="Karim Ahmed" />
+              </Field>
+            </div>
+            <Field label={t('phone')} required error={errors.phone}>
+              <input type="tel" className={inputCls} value={form.phone} onChange={set('phone')} placeholder="01XXXXXXXXX" />
+            </Field>
+            <Field label={t('alt_phone')} error={errors.altPhone} hint={t('optional')}>
+              <input type="tel" className={inputCls} value={form.altPhone} onChange={set('altPhone')} placeholder="01XXXXXXXXX" />
+            </Field>
+            <div className="sm:col-span-2">
+              <Field label={t('whatsapp')} error={errors.whatsapp} hint={t('optional')}>
+                <input type="tel" className={inputCls} value={form.whatsapp} onChange={set('whatsapp')} placeholder="01XXXXXXXXX" />
+              </Field>
+            </div>
+            <div className="sm:col-span-2">
+              <Field label={t('notes')} hint={t('optional')}>
+                <textarea rows="3" className={inputCls} value={form.notes} onChange={set('notes')} placeholder={t('notes_ph')} />
+              </Field>
+            </div>
+          </div>
+        </Card>
+
+        {/* Confirm */}
+        <ConfirmCheck checked={confirmed} onChange={(v) => { setConfirmed(v); setErrors((e) => ({ ...e, confirm: null })); }} t={t} error={errors.confirm} />
+
+        <button
+          type="submit"
+          disabled={!confirmed || busy}
+          className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-brand-500 to-brand-700 px-6 py-4 text-[15px] font-extrabold text-white shadow-red transition enabled:hover:brightness-105 enabled:active:scale-[.99] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+        >
+          {busy ? <><Spinner /> {t('submitting')}</> : <><Icon.drop width="18" height="18" /> {t('submit_request')}</>}
+        </button>
+        <p className="pb-4 text-center text-[11.5px] text-slate-400">{t('no_account')}</p>
+      </form>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   12. DONOR REGISTRATION FORM
+   ══════════════════════════════════════════════════════════════ */
+const EMPTY_DONOR = {
+  fullName: '', bloodGroup: '', phone: '', whatsapp: '',
+  division: '', district: '', upazila: '', area: '',
+  availability: 'available', lastDonationDate: '', bio: ''
+};
+
+function DonorFormPage({ lang, t, showToast }) {
+  const [form, setForm] = useState(EMPTY_DONOR);
+  const [confirmed, setConfirmed] = useState(false);
+  const [errors, setErrors] = useState({});
+  const [busy, setBusy] = useState(false);
+  const topRef = useRef(null);
+
+  const set = (k) => (e) => {
+    const v = e && e.target ? e.target.value : e;
+    setForm((f) => {
+      const next = { ...f, [k]: v };
+      if (k === 'division') next.district = '';
+      return next;
+    });
+    setErrors((er) => ({ ...er, [k]: null }));
+  };
+
+  const districts = useMemo(() => {
+    const d = DIVISIONS.find((x) => x.en === form.division);
+    return d ? d.districts : [];
+  }, [form.division]);
+
+  function validate() {
+    const e = {};
+    ['fullName', 'bloodGroup', 'phone', 'division', 'district', 'upazila', 'area'].forEach((k) => {
+      if (!String(form[k] || '').trim()) e[k] = t('err_required');
+    });
+    if (form.phone && !isValidPhone(form.phone)) e.phone = t('err_phone');
+    if (form.whatsapp && !isValidPhone(form.whatsapp)) e.whatsapp = t('err_phone');
+    if (!confirmed) e.confirm = t('err_confirm');
+    return e;
+  }
+
+  async function submit(ev) {
+    ev.preventDefault();
+    const e = validate();
+    if (Object.keys(e).length) {
+      setErrors(e);
+      if (topRef.current) topRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    setBusy(true);
+    try {
+      let id = nextDonorId();
+      let guard = 0;
+      while (guard < 5) {
+        const existing = await getDoc('donors', id);
+        if (!existing) break;
+        id = nextDonorId();
+        guard++;
+      }
+      const record = { ...form, id, createdAt: new Date().toISOString() };
+      await putDoc('donors', id, record);
+      showToast(t('msg_donor_created'));
+      navigate('/donor/' + id);
+    } catch (err) {
+      console.error(err);
+      showToast(t('err_generic'));
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div className="mx-auto max-w-3xl px-4 py-8" ref={topRef}>
+      <button onClick={() => navigate('/')} className="mb-5 inline-flex items-center gap-1.5 text-[13px] font-bold text-slate-500 hover:text-brand-600">
+        <Icon.arrowLeft width="15" height="15" /> {t('back')}
+      </button>
+
+      <div className="rounded-3xl bg-gradient-to-br from-brand-600 to-brand-900 p-6 text-white shadow-red">
+        <span className="inline-flex items-center gap-2 rounded-full bg-white/15 px-3 py-1 text-[11px] font-bold">
+          <Icon.users width="12" height="12" /> {t('donor_profile')}
+        </span>
+        <h1 className="mt-3 text-[24px] font-extrabold leading-tight sm:text-3xl">{t('df_title')}</h1>
+        <p className="mt-2 text-[13px] leading-relaxed text-white/80">{t('df_sub')}</p>
+      </div>
+
+      <form onSubmit={submit} className="mt-5 space-y-4">
+        <Card>
+          <SectionTitle>{t('patient_details')}</SectionTitle>
+          <div className="grid gap-3.5 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <Field label={t('full_name')} required error={errors.fullName}>
+                <input className={inputCls} value={form.fullName} onChange={set('fullName')} placeholder="Abdullah Al Mamun" />
+              </Field>
+            </div>
+            <Field label={t('blood_group')} required error={errors.bloodGroup}>
+              <select className={selectCls} style={selectStyle} value={form.bloodGroup} onChange={set('bloodGroup')}>
+                <option value="">{t('any')}</option>
+                {BLOOD_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
+              </select>
+            </Field>
+            <Field label={t('availability')} required error={errors.availability}>
+              <select className={selectCls} style={selectStyle} value={form.availability} onChange={set('availability')}>
+                <option value="available">{t('available')}</option>
+                <option value="unavailable">{t('unavailable')}</option>
+              </select>
+            </Field>
+            <Field label={t('phone')} required error={errors.phone}>
+              <input type="tel" className={inputCls} value={form.phone} onChange={set('phone')} placeholder="01XXXXXXXXX" />
+            </Field>
+            <Field label={t('whatsapp')} error={errors.whatsapp} hint={t('optional')}>
+              <input type="tel" className={inputCls} value={form.whatsapp} onChange={set('whatsapp')} placeholder="01XXXXXXXXX" />
+            </Field>
+            <div className="sm:col-span-2">
+              <Field label={t('last_donation')} hint={t('optional')}>
+                <input type="date" className={inputCls} value={form.lastDonationDate} onChange={set('lastDonationDate')} />
+              </Field>
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <SectionTitle>{t('location_details')}</SectionTitle>
+          <div className="grid gap-3.5 sm:grid-cols-2">
+            <Field label={t('division')} required error={errors.division}>
+              <select className={selectCls} style={selectStyle} value={form.division} onChange={set('division')}>
+                <option value="">{t('select_division')}</option>
+                {DIVISIONS.map((d) => <option key={d.en} value={d.en}>{lang === 'bn' ? d.bn : d.en}</option>)}
+              </select>
+            </Field>
+            <Field label={t('district')} required error={errors.district}>
+              <select className={selectCls} style={selectStyle} value={form.district} onChange={set('district')} disabled={!form.division}>
+                <option value="">{t('select_district')}</option>
+                {districts.map((d) => <option key={d.en} value={d.en}>{lang === 'bn' ? d.bn : d.en}</option>)}
+              </select>
+            </Field>
+            <Field label={t('upazila')} required error={errors.upazila}>
+              <input className={inputCls} value={form.upazila} onChange={set('upazila')} placeholder={t('upazila_ph')} />
+            </Field>
+            <Field label={t('area')} required error={errors.area}>
+              <input className={inputCls} value={form.area} onChange={set('area')} placeholder={t('area_ph')} />
+            </Field>
+            <div className="sm:col-span-2">
+              <Field label={t('bio')} hint={t('optional')}>
+                <textarea rows="3" className={inputCls} value={form.bio} onChange={set('bio')} placeholder={t('bio_ph')} />
+              </Field>
+            </div>
+          </div>
+        </Card>
+
+        <ConfirmCheck checked={confirmed} onChange={(v) => { setConfirmed(v); setErrors((e) => ({ ...e, confirm: null })); }} t={t} error={errors.confirm} />
+
+        <button
+          type="submit"
+          disabled={!confirmed || busy}
+          className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-brand-500 to-brand-700 px-6 py-4 text-[15px] font-extrabold text-white shadow-red transition enabled:hover:brightness-105 enabled:active:scale-[.99] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+        >
+          {busy ? <><Spinner /> {t('submitting')}</> : <><Icon.check width="18" height="18" /> {t('submit_donor')}</>}
+        </button>
+        <p className="pb-4 text-center text-[11.5px] text-slate-400">{t('no_account')}</p>
+      </form>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   13. SHARE BAR
+   ══════════════════════════════════════════════════════════════ */
+function ShareBar({ url, message, t, onDownload, busy }) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch (e) {
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch (err) {}
+      document.body.removeChild(ta);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2200);
+  };
+
+  const wa = `https://wa.me/?text=${encodeURIComponent(message + '\n' + url)}`;
+  const fb = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`;
+
+  const native = async () => {
+    if (navigator.share) {
+      try { await navigator.share({ title: t('app'), text: message, url }); } catch (e) {}
+    } else {
+      copy();
+    }
+  };
+
+  const btn = 'flex flex-col items-center justify-center gap-1.5 rounded-2xl border px-2 py-3 text-[11px] font-bold transition active:scale-[.97]';
+
+  return (
+    <div>
+      <h3 className="mb-3 text-[13px] font-extrabold text-slate-700">{t('share_this')}</h3>
+      <div className="grid grid-cols-4 gap-2">
+        <a href={wa} target="_blank" rel="noopener noreferrer" className={`${btn} border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100`}>
+          <Icon.whatsapp width="19" height="19" /> {t('chat_whatsapp')}
+        </a>
+        <a href={fb} target="_blank" rel="noopener noreferrer" className={`${btn} border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100`}>
+          <Icon.facebook width="19" height="19" /> Facebook
+        </a>
+        <button onClick={copy} className={`${btn} ${copied ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'}`}>
+          {copied ? <Icon.check width="19" height="19" /> : <Icon.copy width="19" height="19" />}
+          {copied ? t('copied') : t('copy_link')}
+        </button>
+        <button onClick={native} className={`${btn} border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100`}>
+          <Icon.share width="19" height="19" /> {t('native_share')}
+        </button>
+      </div>
+
+      {onDownload && (
+        <button
+          onClick={onDownload}
+          disabled={busy}
+          className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-brand-500 to-brand-700 px-6 py-4 text-[14.5px] font-extrabold text-white shadow-red transition enabled:hover:brightness-105 enabled:active:scale-[.99] disabled:opacity-50"
+        >
+          {busy ? <><Spinner /> {t('generating')}</> : <><Icon.download width="18" height="18" /> {t('download_card')}</>}
+        </button>
+      )}
+
+      <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5">
+        <div className="text-[10.5px] font-bold uppercase tracking-wide text-slate-400">{t('public_link')}</div>
+        <div className="mt-0.5 truncate text-[12px] font-semibold text-slate-600">{url}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   14. REQUEST PROFILE PAGE
+   ══════════════════════════════════════════════════════════════ */
+function RequestProfilePage({ id, lang, t, showToast }) {
+  const [req, setReq] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const qrRef = useRef(null);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    getDoc('requests', id).then((d) => {
+      if (!alive) return;
+      setReq(d);
+      setLoading(false);
+    });
+    return () => { alive = false; };
+  }, [id]);
+
+  const url = publicUrl('/request/' + id);
+
+  useEffect(() => {
+    if (!qrRef.current || !req) return;
+    qrRef.current.innerHTML = '';
+    if (window.QRCode) {
+      try {
+        new window.QRCode(qrRef.current, {
+          text: url, width: 148, height: 148,
+          colorDark: '#0F172A', colorLight: '#FFFFFF',
+          correctLevel: window.QRCode.CorrectLevel.M
+        });
+      } catch (e) {}
+    }
+  }, [req, url]);
+
+  async function download() {
+    if (!req) return;
+    setBusy(true);
+    try {
+      const canvas = await generateRequestCard(req, lang, t);
+      const dataUrl = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = `BloodConnect-${req.id}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (e) {
+      console.error(e);
+      showToast(t('err_generic'));
+    }
+    setBusy(false);
+  }
+
+  async function markFulfilled() {
+    try {
+      await putDoc('requests', req.id, { fulfilled: true }, true);
+      setReq((r) => ({ ...r, fulfilled: true }));
+      showToast(t('fulfilled_msg'));
+    } catch (e) { showToast(t('err_generic')); }
+  }
+
+  if (loading) return <CenteredLoader t={t} />;
+
+  if (!req) {
+    return (
+      <div className="mx-auto max-w-md px-4 py-24 text-center">
+        <div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-brand-50 text-brand-500">
+          <Icon.drop width="28" height="28" />
+        </div>
+        <h1 className="mt-4 text-xl font-extrabold text-slate-900">{t('not_found')}</h1>
+        <p className="mt-2 text-[13px] text-slate-500">{t('not_found_d')}</p>
+        <button onClick={() => navigate('/')} className="mt-6 rounded-xl bg-brand-600 px-5 py-3 text-[13.5px] font-bold text-white">{t('go_home')}</button>
+      </div>
+    );
+  }
+
+  const status = reqStatus(req);
+  const statusTone = status === 'active' ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
+    : status === 'fulfilled' ? 'bg-slate-100 text-slate-600 border-slate-200'
+    : 'bg-amber-50 text-amber-700 border-amber-100';
+
+  return (
+    <div className="mx-auto max-w-3xl px-4 py-6">
+      <button onClick={() => navigate('/requests')} className="mb-4 inline-flex items-center gap-1.5 text-[13px] font-bold text-slate-500 hover:text-brand-600">
+        <Icon.arrowLeft width="15" height="15" /> {t('back')}
+      </button>
+
+      {/* HERO CARD */}
+      <div className="anim overflow-hidden rounded-3xl bg-gradient-to-br from-brand-600 via-brand-700 to-brand-900 p-5 text-white shadow-red sm:p-6">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-[11px] font-bold uppercase tracking-widest text-white/60">{t('request_id')}</div>
+            <div className="mt-0.5 text-[15px] font-extrabold">{req.id}</div>
+          </div>
+          <span className={`rounded-full border px-3 py-1 text-[11px] font-bold ${statusTone}`}>
+            {t('status_' + status)}
+          </span>
+        </div>
+
+        <div className="mt-5 flex items-center gap-4">
+          <div className="grid h-[76px] w-[76px] shrink-0 place-items-center rounded-2xl bg-white/15 text-[28px] font-extrabold ring-2 ring-white/30 backdrop-blur">
+            {req.bloodGroup}
+          </div>
+          <div className="min-w-0">
+            <div className="text-[11px] font-bold uppercase tracking-widest text-white/60">{t('patient_name')}</div>
+            <h1 className="truncate text-[22px] font-extrabold leading-tight sm:text-2xl">{req.patientName}</h1>
+            <div className="mt-1 text-[12.5px] font-semibold text-white/75">
+              {num(req.bags, lang)} {t('bag_unit')} • {t('urgency_' + (req.urgency || 'normal'))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* DETAILS */}
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <Card className="anim anim-d1">
+          <SectionTitle>{t('hospital_details')}</SectionTitle>
+          <DetailRow icon={<Icon.hospital width="15" height="15" />} label={t('hospital_name')} value={req.hospitalName} />
+          <DetailRow icon={<Icon.pin width="15" height="15" />} label={t('hospital_address')} value={req.hospitalAddress} />
+          <DetailRow icon={<Icon.calendar width="15" height="15" />} label={t('required_date')} value={fmtDate(req.requiredDate, lang)} />
+          <DetailRow icon={<Icon.clock width="15" height="15" />} label={t('required_time')} value={fmtTime(req.requiredTime, lang)} />
+        </Card>
+
+        <Card className="anim anim-d2">
+          <SectionTitle>{t('location_details')}</SectionTitle>
+          <DetailRow icon={<Icon.pin width="15" height="15" />} label={t('division')} value={divName(req.division, lang)} />
+          <DetailRow icon={<Icon.pin width="15" height="15" />} label={t('district')} value={distName(req.division, req.district, lang)} />
+          <DetailRow icon={<Icon.pin width="15" height="15" />} label={t('upazila')} value={req.upazila} />
+          <DetailRow icon={<Icon.pin width="15" height="15" />} label={t('area')} value={req.area} />
+          <DetailRow icon={<Icon.pin width="15" height="15" />} label={t('detailed_address')} value={req.detailedAddress} />
+        </Card>
+
+        <Card className="anim anim-d3 sm:col-span-2">
+          <SectionTitle>{t('contact_details')}</SectionTitle>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <DetailRow icon={<Icon.users width="15" height="15" />} label={t('contact_person')} value={req.contactName} />
+            <DetailRow icon={<Icon.phone width="15" height="15" />} label={t('phone')} value={req.phone} />
+            {req.altPhone && <DetailRow icon={<Icon.phone width="15" height="15" />} label={t('alt_phone')} value={req.altPhone} />}
+            {req.whatsapp && <DetailRow icon={<Icon.whatsapp width="15" height="15" />} label={t('whatsapp')} value={req.whatsapp} />}
+          </div>
+
+          {req.notes && (
+            <div className="mt-3 rounded-xl border border-amber-100 bg-amber-50 p-3">
+              <div className="text-[10.5px] font-bold uppercase tracking-wide text-amber-600">{t('notes')}</div>
+              <p className="mt-1 text-[13px] leading-relaxed text-amber-900">{req.notes}</p>
+            </div>
+          )}
+
+          <div className="mt-4 grid grid-cols-2 gap-2">
+            <a href={'tel:' + req.phone} className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-brand-500 to-brand-700 px-4 py-3 text-[13.5px] font-extrabold text-white shadow-red active:scale-[.98]">
+              <Icon.phone width="16" height="16" /> {t('call_now')}
+            </a>
+            <a
+              href={'https://wa.me/' + String(req.whatsapp || req.phone).replace(/[^0-9]/g, '')}
+              target="_blank" rel="noopener noreferrer"
+              className="flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-3 text-[13.5px] font-extrabold text-white shadow-soft active:scale-[.98]"
+            >
+              <Icon.whatsapp width="16" height="16" /> {t('chat_whatsapp')}
+            </a>
+          </div>
+        </Card>
+      </div>
+
+      {/* QR + SHARE */}
+      <Card className="mt-3">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+          <div className="mx-auto shrink-0 rounded-2xl border border-slate-100 bg-white p-2.5 shadow-soft">
+            <div ref={qrRef} className="grid h-[148px] w-[148px] place-items-center" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <ShareBar url={url} message={t('share_message')} t={t} onDownload={download} busy={busy} />
+          </div>
+        </div>
+      </Card>
+
+      {status === 'active' && (
+        <button
+          onClick={markFulfilled}
+          className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-emerald-200 bg-emerald-50 px-6 py-3.5 text-[13.5px] font-extrabold text-emerald-700 transition hover:bg-emerald-100 active:scale-[.99]"
+        >
+          <Icon.check width="17" height="17" /> {t('mark_fulfilled')}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function DetailRow({ icon, label, value }) {
+  return (
+    <div className="flex items-start gap-2.5 border-b border-slate-50 py-2 last:border-0">
+      <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-lg bg-brand-50 text-brand-600">{icon}</span>
+      <div className="min-w-0 flex-1">
+        <div className="text-[10.5px] font-bold uppercase tracking-wide text-slate-400">{label}</div>
+        <div className="break-words text-[13.5px] font-semibold text-slate-800">{value || '—'}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   15. DONOR PROFILE PAGE
+   ══════════════════════════════════════════════════════════════ */
+function DonorProfilePage({ id, lang, t }) {
+  const [donor, setDonor] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const qrRef = useRef(null);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    getDoc('donors', id).then((d) => {
+      if (!alive) return;
+      setDonor(d);
+      setLoading(false);
+    });
+    return () => { alive = false; };
+  }, [id]);
+
+  const url = publicUrl('/donor/' + id);
+
+  useEffect(() => {
+    if (!qrRef.current || !donor) return;
+    qrRef.current.innerHTML = '';
+    if (window.QRCode) {
+      try {
+        new window.QRCode(qrRef.current, {
+          text: url, width: 148, height: 148,
+          colorDark: '#0F172A', colorLight: '#FFFFFF',
+          correctLevel: window.QRCode.CorrectLevel.M
+        });
+      } catch (e) {}
+    }
+  }, [donor, url]);
+
+  if (loading) return <CenteredLoader t={t} />;
+
+  if (!donor) {
+    return (
+      <div className="mx-auto max-w-md px-4 py-24 text-center">
+        <div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-brand-50 text-brand-500">
+          <Icon.users width="28" height="28" />
+        </div>
+        <h1 className="mt-4 text-xl font-extrabold text-slate-900">{t('not_found')}</h1>
+        <p className="mt-2 text-[13px] text-slate-500">{t('not_found_d')}</p>
+        <button onClick={() => navigate('/')} className="mt-6 rounded-xl bg-brand-600 px-5 py-3 text-[13.5px] font-bold text-white">{t('go_home')}</button>
+      </div>
+    );
+  }
+
+  const available = donor.availability === 'available';
+
+  return (
+    <div className="mx-auto max-w-3xl px-4 py-6">
+      <button onClick={() => navigate('/donors')} className="mb-4 inline-flex items-center gap-1.5 text-[13px] font-bold text-slate-500 hover:text-brand-600">
+        <Icon.arrowLeft width="15" height="15" /> {t('back')}
+      </button>
+
+      <div className="anim overflow-hidden rounded-3xl bg-gradient-to-br from-brand-600 via-brand-700 to-brand-900 p-5 text-white shadow-red sm:p-6">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-[11px] font-bold uppercase tracking-widest text-white/60">{t('donor_id')}</div>
+            <div className="mt-0.5 text-[15px] font-extrabold">{donor.id}</div>
+          </div>
+          <span className={`rounded-full px-3 py-1 text-[11px] font-bold ${available ? 'bg-emerald-400/20 text-emerald-100 ring-1 ring-emerald-300/40' : 'bg-white/15 text-white/80 ring-1 ring-white/25'}`}>
+            {available ? t('available') : t('unavailable')}
+          </span>
+        </div>
+
+        <div className="mt-5 flex items-center gap-4">
+          <div className="grid h-[76px] w-[76px] shrink-0 place-items-center rounded-2xl bg-white/15 text-[28px] font-extrabold ring-2 ring-white/30 backdrop-blur">
+            {donor.bloodGroup}
+          </div>
+          <div className="min-w-0">
+            <div className="text-[11px] font-bold uppercase tracking-widest text-white/60">{t('full_name')}</div>
+            <h1 className="truncate text-[22px] font-extrabold leading-tight sm:text-2xl">{donor.fullName}</h1>
+            <div className="mt-1 truncate text-[12.5px] font-semibold text-white/75">
+              {[donor.area, donor.upazila, distName(donor.division, donor.district, lang)].filter(Boolean).join(', ')}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <Card>
+          <SectionTitle>{t('location_details')}</SectionTitle>
+          <DetailRow icon={<Icon.pin width="15" height="15" />} label={t('division')} value={divName(donor.division, lang)} />
+          <DetailRow icon={<Icon.pin width="15" height="15" />} label={t('district')} value={distName(donor.division, donor.district, lang)} />
+          <DetailRow icon={<Icon.pin width="15" height="15" />} label={t('upazila')} value={donor.upazila} />
+          <DetailRow icon={<Icon.pin width="15" height="15" />} label={t('area')} value={donor.area} />
+        </Card>
+
+        <Card>
+          <SectionTitle>{t('contact_details')}</SectionTitle>
+          <DetailRow icon={<Icon.phone width="15" height="15" />} label={t('phone')} value={donor.phone} />
+          {donor.whatsapp && <DetailRow icon={<Icon.whatsapp width="15" height="15" />} label={t('whatsapp')} value={donor.whatsapp} />}
+          <DetailRow
+            icon={<Icon.calendar width="15" height="15" />}
+            label={t('last_donation')}
+            value={donor.lastDonationDate ? fmtDate(donor.lastDonationDate, lang) : t('never_donated')}
+          />
+          <DetailRow icon={<Icon.drop width="15" height="15" />} label={t('availability')} value={available ? t('available') : t('unavailable')} />
+        </Card>
+
+        {donor.bio && (
+          <Card className="sm:col-span-2">
+            <SectionTitle>{t('bio')}</SectionTitle>
+            <p className="text-[13.5px] leading-relaxed text-slate-600">{donor.bio}</p>
+          </Card>
+        )}
+
+        <Card className="sm:col-span-2">
+          <div className="grid grid-cols-2 gap-2">
+            <a href={'tel:' + donor.phone} className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-brand-500 to-brand-700 px-4 py-3.5 text-[13.5px] font-extrabold text-white shadow-red active:scale-[.98]">
+              <Icon.phone width="16" height="16" /> {t('call_now')}
+            </a>
+            <a
+              href={'https://wa.me/' + String(donor.whatsapp || donor.phone).replace(/[^0-9]/g, '')}
+              target="_blank" rel="noopener noreferrer"
+              className="flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-3.5 text-[13.5px] font-extrabold text-white active:scale-[.98]"
+            >
+              <Icon.whatsapp width="16" height="16" /> {t('chat_whatsapp')}
+            </a>
+          </div>
+        </Card>
+      </div>
+
+      <Card className="mt-3">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+          <div className="mx-auto shrink-0 rounded-2xl border border-slate-100 bg-white p-2.5 shadow-soft">
+            <div ref={qrRef} className="grid h-[148px] w-[148px] place-items-center" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <ShareBar url={url} message={t('share_message_donor')} t={t} />
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function CenteredLoader({ t }) {
+  return (
+    <div className="grid min-h-[50vh] place-items-center">
+      <div className="text-center">
+        <div className="mx-auto h-10 w-10 rounded-full border-[3px] border-brand-100 border-t-brand-600 spinner" />
+        <p className="mt-3 text-[12.5px] font-semibold text-slate-400">{t('loading')}</p>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   16. SEARCH PAGES
+   ══════════════════════════════════════════════════════════════ */
+function FilterShell({ title, sub, children }) {
+  return (
+    <div className="rounded-3xl bg-gradient-to-br from-brand-600 to-brand-900 p-5 text-white shadow-red">
+      <h1 className="text-[22px] font-extrabold leading-tight sm:text-3xl">{title}</h1>
+      <p className="mt-1.5 text-[12.5px] leading-relaxed text-white/75">{sub}</p>
+      <div className="mt-4">{children}</div>
+    </div>
+  );
+}
+
+const filterSelect = 'w-full rounded-xl border border-white/20 bg-white/10 px-3 py-2.5 text-[12.5px] font-semibold text-white outline-none backdrop-blur transition focus:border-white/50 [&>option]:text-slate-900';
+
+function DonorSearchPage({ lang, t }) {
+  const [f, setF] = useState({ bloodGroup: '', division: '', district: '', upazila: '', availability: '' });
+  const [list, setList] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => { fetchAll('donors').then((d) => { setList(d); setLoaded(true); }); }, []);
+
+  const districts = useMemo(() => {
+    const d = DIVISIONS.find((x) => x.en === f.division);
+    return d ? d.districts : [];
+  }, [f.division]);
+
+  const set = (k) => (e) => {
+    const v = e.target.value;
+    setF((prev) => {
+      const next = { ...prev, [k]: v };
+      if (k === 'division') next.district = '';
+      return next;
+    });
+  };
+
+  const results = useMemo(() => {
+    return list.filter((d) => {
+      if (f.bloodGroup && d.bloodGroup !== f.bloodGroup) return false;
+      if (f.division && d.division !== f.division) return false;
+      if (f.district && d.district !== f.district) return false;
+      if (f.upazila && !String(d.upazila || '').toLowerCase().includes(f.upazila.toLowerCase())) return false;
+      if (f.availability && d.availability !== f.availability) return false;
+      return true;
+    });
+  }, [list, f]);
+
+  const reset = () => setF({ bloodGroup: '', division: '', district: '', upazila: '', availability: '' });
+
+  return (
+    <div className="mx-auto max-w-5xl px-4 py-6">
+      <FilterShell title={t('ds_title')} sub={t('ds_sub')}>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+          <select className={filterSelect} value={f.bloodGroup} onChange={set('bloodGroup')}>
+            <option value="">{t('blood_group')}: {t('any')}</option>
+            {BLOOD_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
+          </select>
+          <select className={filterSelect} value={f.division} onChange={set('division')}>
+            <option value="">{t('division')}: {t('any')}</option>
+            {DIVISIONS.map((d) => <option key={d.en} value={d.en}>{lang === 'bn' ? d.bn : d.en}</option>)}
+          </select>
+          <select className={filterSelect} value={f.district} onChange={set('district')} disabled={!f.division}>
+            <option value="">{t('district')}: {t('any')}</option>
+            {districts.map((d) => <option key={d.en} value={d.en}>{lang === 'bn' ? d.bn : d.en}</option>)}
+          </select>
+          <input className={filterSelect + ' placeholder-white/60'} value={f.upazila} onChange={set('upazila')} placeholder={t('upazila')} />
+          <select className={filterSelect} value={f.availability} onChange={set('availability')}>
+            <option value="">{t('filter_availability')}: {t('any')}</option>
+            <option value="available">{t('available')}</option>
+            <option value="unavailable">{t('unavailable')}</option>
+          </select>
+        </div>
+        <button onClick={reset} className="mt-2.5 rounded-lg border border-white/25 bg-white/10 px-3 py-1.5 text-[11.5px] font-bold text-white/90 hover:bg-white/20">
+          {t('reset')}
+        </button>
+      </FilterShell>
+
+      <div className="mt-4 flex items-center justify-between">
+        <p className="text-[12.5px] font-semibold text-slate-500">
+          {loaded ? `${num(results.length, lang)} ${t('found')}` : t('loading')}
+        </p>
+      </div>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        {!loaded ? (
+          <Card className="sm:col-span-2"><div className="py-6 text-center text-[13px] text-slate-400">{t('loading')}</div></Card>
+        ) : results.length === 0 ? (
+          <Card className="sm:col-span-2"><div className="py-8 text-center text-[13px] text-slate-400">{t('no_donors')}</div></Card>
+        ) : (
+          results.map((d) => <DonorListCard key={d.id} donor={d} lang={lang} t={t} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RequestSearchPage({ lang, t }) {
+  const [f, setF] = useState({ bloodGroup: '', district: '', upazila: '', urgency: '', status: '' });
+  const [list, setList] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => { fetchAll('requests').then((d) => { setList(d); setLoaded(true); }); }, []);
+
+  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
+
+  const results = useMemo(() => {
+    return list.filter((r) => {
+      if (f.bloodGroup && r.bloodGroup !== f.bloodGroup) return false;
+      if (f.district && r.district !== f.district) return false;
+      if (f.upazila && !String(r.upazila || '').toLowerCase().includes(f.upazila.toLowerCase())) return false;
+      if (f.urgency && r.urgency !== f.urgency) return false;
+      if (f.status && reqStatus(r) !== f.status) return false;
+      return true;
+    });
+  }, [list, f]);
+
+  const allDistricts = useMemo(() => DIVISIONS.flatMap((d) => d.districts.map((x) => ({ ...x, div: d.en }))), []);
+  const reset = () => setF({ bloodGroup: '', district: '', upazila: '', urgency: '', status: '' });
+
+  return (
+    <div className="mx-auto max-w-5xl px-4 py-6">
+      <FilterShell title={t('rs_title')} sub={t('rs_sub')}>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+          <select className={filterSelect} value={f.bloodGroup} onChange={set('bloodGroup')}>
+            <option value="">{t('blood_group')}: {t('any')}</option>
+            {BLOOD_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
+          </select>
+          <select className={filterSelect} value={f.district} onChange={set('district')}>
+            <option value="">{t('district')}: {t('any')}</option>
+            {allDistricts.map((d) => <option key={d.div + d.en} value={d.en}>{lang === 'bn' ? d.bn : d.en}</option>)}
+          </select>
+          <input className={filterSelect + ' placeholder-white/60'} value={f.upazila} onChange={set('upazila')} placeholder={t('upazila')} />
+          <select className={filterSelect} value={f.urgency} onChange={set('urgency')}>
+            <option value="">{t('urgency')}: {t('any')}</option>
+            <option value="normal">{t('urgency_normal')}</option>
+            <option value="urgent">{t('urgency_urgent')}</option>
+            <option value="critical">{t('urgency_critical')}</option>
+          </select>
+          <select className={filterSelect} value={f.status} onChange={set('status')}>
+            <option value="">{t('status')}: {t('any')}</option>
+            <option value="active">{t('status_active')}</option>
+            <option value="fulfilled">{t('status_fulfilled')}</option>
+            <option value="expired">{t('status_expired')}</option>
+          </select>
+        </div>
+        <button onClick={reset} className="mt-2.5 rounded-lg border border-white/25 bg-white/10 px-3 py-1.5 text-[11.5px] font-bold text-white/90 hover:bg-white/20">
+          {t('reset')}
+        </button>
+      </FilterShell>
+
+      <div className="mt-4 flex items-center justify-between">
+        <p className="text-[12.5px] font-semibold text-slate-500">
+          {loaded ? `${num(results.length, lang)} ${t('found')}` : t('loading')}
+        </p>
+        <button onClick={() => navigate('/request-blood')} className="inline-flex items-center gap-1 rounded-lg bg-brand-50 px-3 py-1.5 text-[11.5px] font-bold text-brand-700">
+          <Icon.plus width="13" height="13" /> {t('nav_request')}
+        </button>
+      </div>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        {!loaded ? (
+          <Card className="sm:col-span-2"><div className="py-6 text-center text-[13px] text-slate-400">{t('loading')}</div></Card>
+        ) : results.length === 0 ? (
+          <Card className="sm:col-span-2"><div className="py-8 text-center text-[13px] text-slate-400">{t('no_requests')}</div></Card>
+        ) : (
+          results.map((r) => <RequestListCard key={r.id} req={r} lang={lang} t={t} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   17. APP ROOT
+   ══════════════════════════════════════════════════════════════ */
+function App() {
+  const [lang, setLangState] = useState(() => localStorage.getItem('bc_lang') || 'en');
+  const [path, setPath] = useState(getPath());
+  const [toast, setToast] = useState('');
+
+  const t = useCallback((key) => (T[lang] && T[lang][key] !== undefined ? T[lang][key] : key), [lang]);
+
+  const setLang = (l) => {
+    setLangState(l);
+    try { localStorage.setItem('bc_lang', l); } catch (e) {}
+  };
+
+  useEffect(() => {
+    document.documentElement.lang = lang;
+    document.title = T[lang].app + ' — ' + T[lang].tag;
+  }, [lang]);
+
+  useEffect(() => {
+    const onPop = () => setPath(getPath());
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(''), 2600);
+  };
+
+  const segments = path.split('/').filter(Boolean);
+  let page;
+  if (segments.length === 0) page = { name: 'home' };
+  else if (segments[0] === 'request-blood') page = { name: 'requestForm' };
+  else if (segments[0] === 'register-donor') page = { name: 'donorForm' };
+  else if (segments[0] === 'donors') page = { name: 'donorSearch' };
+  else if (segments[0] === 'requests') page = { name: 'requestSearch' };
+  else if (segments[0] === 'request' && segments[1]) page = { name: 'requestProfile', id: segments[1] };
+  else if (segments[0] === 'donor' && segments[1]) page = { name: 'donorProfile', id: segments[1] };
+  else page = { name: 'home' };
+
+  let content;
+  switch (page.name) {
+    case 'requestForm': content = <RequestFormPage lang={lang} t={t} showToast={showToast} />; break;
+    case 'donorForm': content = <DonorFormPage lang={lang} t={t} showToast={showToast} />; break;
+    case 'donorSearch': content = <DonorSearchPage lang={lang} t={t} />; break;
+    case 'requestSearch': content = <RequestSearchPage lang={lang} t={t} />; break;
+    case 'requestProfile': content = <RequestProfilePage id={page.id} lang={lang} t={t} showToast={showToast} />; break;
+    case 'donorProfile': content = <DonorProfilePage id={page.id} lang={lang} t={t} />; break;
+    default: content = <HomePage lang={lang} t={t} />;
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50/60">
+      <Header lang={lang} setLang={setLang} t={t} />
+      <main key={path + lang}>{content}</main>
+      <Footer t={t} />
+      <Toast message={toast} />
+      {/* Mobile sticky quick action */}
+      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 flex justify-center pb-4 md:hidden">
+        <button
+          onClick={() => navigate('/request-blood')}
+          className="pointer-events-auto inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-brand-500 to-brand-700 px-5 py-3.5 text-[13px] font-extrabold text-white shadow-red active:scale-95"
+        >
+          <Icon.drop width="16" height="16" /> {t('nav_request')}
+        </button>
+      </div>
+      <div className="h-16 md:hidden" />
+    </div>
+  );
+}
+
+const rootEl = document.getElementById('root');
+rootEl.innerHTML = '';
+ReactDOM.createRoot(rootEl).render(<App />);
+</script>
+</body>
+</html>
