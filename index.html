@@ -5,8 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>BloodConnect — Blood Donation Network</title>
 <link rel="manifest" href="manifest.json" />
-<link rel="icon" type="image/png" href="https://cdn-icons-png.flaticon.com/512/3305/3305767.png" />
-<link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/3305/3305767.png" />
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='110' fill='%23D90A24'/%3E%3Cpath d='M256 90 C 340 200, 380 260, 380 310 C 380 380, 320 420, 256 420 C 192 420, 132 380, 132 310 C 132 260, 172 200, 256 90 Z' fill='%23ffffff'/%3E%3C/svg%3E" />
 <meta name="theme-color" content="#D90A24" />
 <meta name="description" content="BloodConnect — connect blood donors with patients in seconds. No account needed." />
 
@@ -1582,6 +1581,163 @@ function DonorFormPage({ lang, t, showToast }) {
   );
 }
 
+function rr(ctx, x, y, w, h, r) {
+  const rad = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rad, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rad);
+  ctx.arcTo(x + w, y + h, x, y + h, rad);
+  ctx.arcTo(x, y + h, x, y, rad);
+  ctx.arcTo(x, y, x + w, y, rad);
+  ctx.closePath();
+}
+function wrapLines(ctx, text, maxWidth) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = '';
+  for (const w of words) {
+    const test = line ? line + ' ' + w : w;
+    if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = w; }
+    else line = test;
+  }
+  if (line) lines.push(line);
+  return lines.length ? lines : [''];
+}
+function makeQRCanvas(text, size) {
+  return new Promise((resolve, reject) => {
+    if (!window.QRCode) return reject(new Error('QR library unavailable'));
+    const holder = document.createElement('div');
+    holder.style.cssText = 'position:fixed;left:-99999px;top:0;width:1px;height:1px;overflow:hidden';
+    document.body.appendChild(holder);
+    try {
+      new window.QRCode(holder, { text, width: size, height: size, colorDark: '#0F172A', colorLight: '#FFFFFF', correctLevel: window.QRCode.CorrectLevel.M });
+    } catch (e) { document.body.removeChild(holder); return reject(e); }
+    setTimeout(() => {
+      const canvas = holder.querySelector('canvas');
+      if (canvas) { document.body.removeChild(holder); resolve(canvas); }
+      else {
+        const img = holder.querySelector('img');
+        if (img) {
+          const c = document.createElement('canvas'); c.width = size; c.height = size;
+          const cx = c.getContext('2d'); cx.fillStyle = '#fff'; cx.fillRect(0, 0, size, size);
+          img.onload = () => { cx.drawImage(img, 0, 0, size, size); document.body.removeChild(holder); resolve(c); };
+        } else { document.body.removeChild(holder); reject(new Error('QR render failed')); }
+      }
+    }, 90);
+  });
+}
+async function generateRequestCard(req, lang, t) {
+  const isBn = lang === 'bn'; const W = 1080, H = 1350;
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const ctx = cv.getContext('2d');
+  try { await document.fonts.ready; } catch (e) {}
+  const FONT = '"Plus Jakarta Sans","Hind Siliguri",system-ui,sans-serif';
+  const setF = (weight, size) => { ctx.font = `${weight} ${size}px ${FONT}`; };
+  const N = (v) => (isBn ? bnNum(v) : String(v));
+  const safe = (v) => (v && String(v).trim() ? String(v).trim() : '—');
+
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#FFF1F2'); bg.addColorStop(0.5, '#FFFFFF'); bg.addColorStop(1, '#FFF5F5');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = 'rgba(245,22,47,0.055)';
+  ctx.beginPath(); ctx.arc(1010, 90, 280, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(40, 1300, 240, 0, Math.PI * 2); ctx.fill();
+
+  const hg = ctx.createLinearGradient(0, 0, W, 300);
+  hg.addColorStop(0, '#F5162F'); hg.addColorStop(1, '#A10F22');
+  ctx.fillStyle = hg; ctx.fillRect(0, 0, W, 300);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.16)'; ctx.beginPath(); ctx.arc(98, 104, 44, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#FFFFFF';
+  (function droplet(cx, cy, r) {
+    ctx.beginPath(); ctx.moveTo(cx, cy - r);
+    ctx.bezierCurveTo(cx + r * 0.95, cy - r * 0.12, cx + r * 0.98, cy + r * 0.55, cx, cy + r);
+    ctx.bezierCurveTo(cx - r * 0.98, cy + r * 0.55, cx - r * 0.95, cy - r * 0.12, cx, cy - r);
+    ctx.closePath(); ctx.fill();
+  })(98, 104, 21);
+
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = '#FFFFFF';
+  setF(800, 40); ctx.fillText(t('app'), 160, 100);
+  ctx.fillStyle = 'rgba(255,255,255,0.78)'; setF(500, 20); ctx.fillText(t('tag'), 160, 134);
+
+  setF(700, 26); const idText = safe(req.id); const idW = ctx.measureText(idText).width;
+  const chipW = idW + 56, chipH = 60, chipX = W - 60 - chipW, chipY = 74;
+  ctx.fillStyle = 'rgba(255,255,255,0.18)'; rr(ctx, chipX, chipY, chipW, chipH, 30); ctx.fill();
+  ctx.fillStyle = '#FFFFFF'; ctx.textBaseline = 'middle'; ctx.fillText(idText, chipX + 28, chipY + chipH / 2 + 1);
+
+  ctx.textBaseline = 'alphabetic'; ctx.fillStyle = '#FFFFFF'; setF(800, 52); ctx.fillText(t('request_profile'), 70, 240);
+
+  const urgLabel = t('urgency_' + (req.urgency || 'normal')); setF(700, 24);
+  const uw = ctx.measureText(urgLabel).width; const pillW = uw + 52, pillH = 52, pillX = W - 70 - pillW, pillY = 202;
+  ctx.fillStyle = 'rgba(255,255,255,0.94)'; rr(ctx, pillX, pillY, pillW, pillH, 26); ctx.fill();
+  ctx.fillStyle = '#A10F22'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(urgLabel, pillX + pillW / 2, pillY + pillH / 2 + 1);
+
+  ctx.save(); ctx.shadowColor = 'rgba(15,23,42,0.14)'; ctx.shadowBlur = 44; ctx.shadowOffsetY = 18;
+  ctx.fillStyle = '#FFFFFF'; rr(ctx, 56, 262, W - 112, 952, 46); ctx.fill(); ctx.restore();
+
+  ctx.save(); ctx.shadowColor = 'rgba(217,10,36,0.38)'; ctx.shadowBlur = 34; ctx.shadowOffsetY = 12;
+  const bgr = ctx.createLinearGradient(760, 296, 972, 508); bgr.addColorStop(0, '#F5162F'); bgr.addColorStop(1, '#920B21');
+  ctx.fillStyle = bgr; ctx.beginPath(); ctx.arc(866, 402, 104, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  ctx.strokeStyle = 'rgba(255,255,255,0.92)'; ctx.lineWidth = 8; ctx.beginPath(); ctx.arc(866, 402, 96, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#FFFFFF'; setF(800, 74); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(safe(req.bloodGroup), 866, 406);
+
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = '#94A3B8'; setF(700, 21); ctx.fillText(t('patient_name').toUpperCase(), 110, 342);
+  ctx.fillStyle = '#0F172A'; setF(800, 44);
+  const nameLines = wrapLines(ctx, safe(req.patientName), 620).slice(0, 2);
+  nameLines.forEach((l, i) => ctx.fillText(l, 110, 392 + i * 52));
+
+  ctx.fillStyle = '#94A3B8'; setF(700, 21); ctx.fillText(t('hospital_name').toUpperCase(), 110, 486);
+  ctx.fillStyle = '#334155'; setF(600, 30);
+  const hospLines = wrapLines(ctx, safe(req.hospitalName), 620).slice(0, 2);
+  hospLines.forEach((l, i) => ctx.fillText(l, 110, 526 + i * 38));
+
+  ctx.strokeStyle = '#F1F5F9'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(110, 606); ctx.lineTo(970, 606); ctx.stroke();
+
+  const cols = [
+    { x: 110, label: t('bags'), value: `${N(safe(req.bags))} ${t('bag_unit')}` },
+    { x: 428, label: t('required_date'), value: fmtDate(req.requiredDate, lang) },
+    { x: 748, label: t('required_time'), value: fmtTime(req.requiredTime, lang) }
+  ];
+  cols.forEach((c) => {
+    ctx.fillStyle = '#94A3B8'; setF(700, 21); ctx.textAlign = 'left'; ctx.fillText(c.label.toUpperCase(), c.x, 664);
+    ctx.fillStyle = '#0F172A'; setF(700, 30); ctx.fillText(c.value, c.x, 706);
+  });
+
+  ctx.strokeStyle = '#F1F5F9'; ctx.beginPath(); ctx.moveTo(110, 750); ctx.lineTo(970, 750); ctx.stroke();
+
+  ctx.fillStyle = '#94A3B8'; setF(700, 21); ctx.fillText(t('location_details').toUpperCase(), 110, 802);
+  const locParts = [req.division, req.district, req.upazila, req.area].filter(Boolean);
+  const loc = locParts.length ? locParts.join(', ') : safe(req.detailedAddress);
+  ctx.fillStyle = '#0F172A'; setF(600, 29);
+  const locLines = wrapLines(ctx, loc, 860).slice(0, 2);
+  locLines.forEach((l, i) => ctx.fillText(l, 110, 844 + i * 38));
+
+  ctx.fillStyle = '#94A3B8'; setF(700, 21); ctx.fillText(t('contact_details').toUpperCase(), 110, 942);
+  const phoneText = N(safe(req.phone)); ctx.fillStyle = '#0F172A'; setF(800, 36);
+  ctx.fillText(phoneText, 110, 988); const pw = ctx.measureText(phoneText).width;
+  if (req.contactName) { ctx.fillStyle = '#64748B'; setF(500, 24); ctx.fillText('•  ' + safe(req.contactName), 110 + pw + 16, 988); }
+
+  ctx.strokeStyle = '#F1F5F9'; ctx.beginPath(); ctx.moveTo(110, 1018); ctx.lineTo(970, 1018); ctx.stroke();
+
+  let qrCanvas = null;
+  try { qrCanvas = await makeQRCanvas(publicUrl('/request/' + req.id), 340); } catch (e) {}
+
+  const qx = 828, qy = 1040, qs = 160;
+  ctx.fillStyle = '#FFFFFF'; rr(ctx, qx - 10, qy - 10, qs + 20, qs + 20, 18); ctx.fill();
+  ctx.strokeStyle = '#F1F5F9'; ctx.lineWidth = 2; rr(ctx, qx - 10, qy - 10, qs + 20, qs + 20, 18); ctx.stroke();
+  if (qrCanvas) { ctx.drawImage(qrCanvas, qx, qy, qs, qs); }
+
+  ctx.textAlign = 'left'; ctx.fillStyle = '#D90A24'; setF(800, 32); ctx.fillText(t('app'), 110, 1090);
+  ctx.fillStyle = '#64748B'; setF(500, 22); ctx.fillText(t('tag'), 110, 1126);
+  ctx.fillStyle = '#94A3B8'; setF(500, 20); ctx.fillText(t('scan_qr'), 110, 1160);
+
+  ctx.textAlign = 'center'; ctx.fillStyle = '#94A3B8'; setF(500, 21); ctx.fillText(t('generated_by'), W / 2, 1276);
+
+  return cv;
+}
+
 /* ══════════════════════════════════════════════════════════════
    14. PROFILES & SEARCH (Kept intact)
    ══════════════════════════════════════════════════════════════ */
@@ -1645,7 +1801,7 @@ function RequestProfilePage({ id, lang, t, showToast }) {
     }
   }, [req, url]);
 
-      async function download() {
+          async function download() {
     if (!req) return;
     setBusy(true);
     try {
@@ -1682,6 +1838,7 @@ function RequestProfilePage({ id, lang, t, showToast }) {
       showToast(t('report_success'));
     } catch (e) { showToast(t('err_generic')); }
   }
+  
   async function handleReport() {
     const reportedIds = JSON.parse(localStorage.getItem('my_reports') || '[]');
     if (reportedIds.includes(req.id)) return showToast(t('reported_already'));
