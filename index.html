@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>BloodConnect — Blood Donation Network</title>
 <link rel="manifest" href="manifest.json" />
-<link rel="icon" type="image/svg+xml" href="icon.svg" />
+<link rel="icon" type="image/png" href="https://cdn-icons-png.flaticon.com/512/3305/3305767.png" />
+<link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/3305/3305767.png" />
 <meta name="theme-color" content="#D90A24" />
 <meta name="description" content="BloodConnect — connect blood donors with patients in seconds. No account needed." />
 
@@ -1644,12 +1645,22 @@ function RequestProfilePage({ id, lang, t, showToast }) {
     }
   }, [req, url]);
 
-  async function download() {
-    if (!req) return; setBusy(true);
+      async function download() {
+    if (!req) return;
+    setBusy(true);
     try {
-      // Simplified download placeholder - assuming generateRequestCard exists from previous version
-      showToast("Download feature requires the original canvas generator logic.");
-    } catch (e) { console.error(e); showToast(t('err_generic')); }
+      const canvas = await generateRequestCard(req, lang, t);
+      const dataUrl = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = `BloodConnect-${req.id}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (e) {
+      console.error(e);
+      showToast(t('err_generic'));
+    }
     setBusy(false);
   }
 
